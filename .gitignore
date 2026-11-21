@@ -1,0 +1,25 @@
+# Ambientes virtuais Python
+.venv/
+venv/
+env/
+
+# Cache e arquivos compilados Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Segurança: NUNCA versionar segredos ou chaves reais
+.env
+.env.*
+*.pem
+*.key
+*.p12
+
+# Logs e arquivos temporários
+*.log
+.DS_Store
+Thumbs.db
+
+# Artefatos locais do cofre (Vault) de execução
+.blind-ai/
