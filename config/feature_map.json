@@ -1,0 +1,140 @@
+{
+  "runtime": {
+    "entrypoint": ["{python}", "-m", "blind_ai.proxy.server", "--port", "{port}"],
+    "health_path": "/health",
+    "pythonpath": "src"
+  },
+  "features": {
+    "synthetic_benchmark": {
+      "domain": "benchmark",
+      "description": "Fase 1A: Dataset sintético 100% fictício (chaves falsas AWS/OpenAI/GitHub/JWT, caminhos internos, IPs privados, código limpo e comentários sensíveis) + avaliador de Recall, Precision e Latência.",
+      "files": [
+        "src/blind_ai/core/benchmark.py",
+        "tests/test_benchmark.py"
+      ],
+      "invariants": [
+        "Dataset deve ser 100% fictício com casos positivos estruturados, contextuais e casos negativos (código limpo).",
+        "Deve calcular Recall, Precision e latência média em ms.",
+        "Deve funcionar apenas com biblioteca padrão Python 3.12 (sem dependências externas obrigatórias)."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_benchmark.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "file_filter": {
+      "domain": "core",
+      "description": "Fase 1B (Camada 1): Filtro determinístico de arquivos proibidos (.env, .pem, .key, id_rsa, credenciais, arquivos binários).",
+      "files": [
+        "src/blind_ai/core/file_filter.py",
+        "tests/test_file_filter.py"
+      ],
+      "invariants": [
+        "Bloqueia .env, .env.*, *.pem, *.key, id_rsa, secrets.* e permite arquivos de código comuns (.py, .js, .ts, .md).",
+        "Suporta lista customizável de padrões bloqueados."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_file_filter.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "deterministic_scanner": {
+      "domain": "core",
+      "description": "Fase 1C (Camada 2): Scanner determinístico (Regex + Entropia de Shannon + AST Python) validando Hipótese H1 (Recall >= 95% em chaves estruturadas/caminhos e latência < 100ms/arquivo).",
+      "files": [
+        "src/blind_ai/core/scanner.py",
+        "tests/test_scanner.py"
+      ],
+      "invariants": [
+        "Detecta chaves AWS, OpenAI, GitHub, JWT, tokens de alta entropia, IPs privados e caminhos internos.",
+        "Hipótese H1: Recall >= 0.95 nos casos estruturados do benchmark sintético e latência média < 100ms.",
+        "Zero falsos positivos nos casos de código limpo do benchmark."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_scanner.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "pseudonym_vault": {
+      "domain": "core",
+      "description": "Fase 1D (Cofre Local): Pseudonimização determinística reversível e restauração íntegra validando Hipótese H3 (código Python continua sintaticamente válido após sanitização e restauração).",
+      "files": [
+        "src/blind_ai/core/vault.py",
+        "tests/test_vault.py"
+      ],
+      "invariants": [
+        "Substitui cada entidade sensível por placeholder determinístico e consistente na mesma sessão.",
+        "restore(sanitize(text)) recupera exatamente o texto original.",
+        "Hipótese H3: código Python sanitizado e restaurado passa em ast.parse()."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_vault.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "blind_ai_cli": {
+      "domain": "cli",
+      "description": "Fase 2: CLI própria (`python -m blind_ai scan`, `sanitize`, `restore`, `benchmark`) consumindo o núcleo `core/`.",
+      "files": [
+        "src/blind_ai/__main__.py",
+        "src/blind_ai/cli/main.py",
+        "tests/test_cli.py"
+      ],
+      "invariants": [
+        "Subcomando `scan` retorna achados em JSON/texto e exit code não-zero quando encontra vazamento com --strict.",
+        "Subcomandos `sanitize` e `restore` funcionam ponta a ponta com arquivo de cofre local.",
+        "Subcomando `benchmark` executa o dataset sintético e imprime métricas H1."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_cli.py", "-v"],
+      "runtime_mode": "cli_command",
+      "cli_probe_command": ["{python}", "-m", "blind_ai", "benchmark"],
+      "probes": []
+    },
+    "contextual_detector": {
+      "domain": "core",
+      "description": "Fase 3 (Camada 3 Experimental): Detector contextual leve (heurística/NER local sobre comentários e strings livres) + experimento científico comparando H1 (determinístico) vs H2 (híbrido).",
+      "files": [
+        "src/blind_ai/core/contextual.py",
+        "src/blind_ai/core/experiment.py",
+        "tests/test_experiment.py"
+      ],
+      "invariants": [
+        "Identifica vazamentos contextuais em comentários/texto livre que o scanner puramente regex deixa passar.",
+        "Experimento H1 vs H2 gera relatório comparativo objetivo (Recall, Precision, Latência) sem dados reais."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_experiment.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "local_http_proxy": {
+      "domain": "proxy",
+      "description": "Fase 4: Proxy/Gateway HTTP local consumindo o mesmo `core/` com endpoints `/health`, `/v1/sanitize`, `/v1/restore` e `/v1/proxy/echo` validados ao vivo.",
+      "files": [
+        "src/blind_ai/proxy/server.py",
+        "tests/test_proxy.py"
+      ],
+      "invariants": [
+        "GET /health responde HTTP 200 com status='ok'.",
+        "POST /v1/sanitize mascara segredos e retorna session_id + sanitized_text.",
+        "POST /v1/restore restaura placeholders da session_id devolvendo o texto original."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_proxy.py", "-v"],
+      "runtime_mode": "http_server",
+      "probes": [
+        {
+          "name": "proxy_healthcheck",
+          "method": "GET",
+          "path": "/health",
+          "expected_status": 200,
+          "expected_json_subset": { "status": "ok" }
+        },
+        {
+          "name": "proxy_sanitize_live",
+          "method": "POST",
+          "path": "/v1/sanitize",
+          "payload": {
+            "text": "token = 'sk-proj-FAKE1234567890abcdefghijklmnop'"
+          },
+          "expected_status": 200,
+          "expected_body_contains": "sanitized_text"
+        }
+      ]
+    }
+  }
+}

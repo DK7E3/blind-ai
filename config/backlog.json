@@ -1,0 +1,90 @@
+{
+  "project": "blind-ai",
+  "mode": "autonomous_veritas",
+  "max_retries_per_task": 3,
+  "tasks": [
+    {
+      "id": "T01",
+      "phase": "Fase 1",
+      "feature_key": "synthetic_benchmark",
+      "title": "Construir dataset sintético e avaliador de métricas (Recall, Precision, Latência)",
+      "depends_on": [],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado: o EvidenceBundle do domínio 'benchmark' (feature 'synthetic_benchmark') apresenta passed == true, com gate_1_hard_constraints e gate_2_unit_tests aprovados (ok: true)."
+    },
+    {
+      "id": "T02",
+      "phase": "Fase 1",
+      "feature_key": "file_filter",
+      "title": "Implementar Camada 1 — Filtro determinístico de arquivos proibidos",
+      "depends_on": [],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'core' (feature 'file_filter'): EvidenceBundle com passed=true e todos os gates aprovados (gate_1_hard_constraints: ok=true, gate_2_unit_tests: ok=true)."
+    },
+    {
+      "id": "T03",
+      "phase": "Fase 1",
+      "feature_key": "deterministic_scanner",
+      "title": "Implementar Camada 2 — Scanner determinístico (Regex + Entropia + AST) e validar H1",
+      "depends_on": [
+        "T01"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'core' (feature 'deterministic_scanner'): passed == true. Gate 1 (gate_1_hard_constraints: ok, 16 ms) e Gate 2 (gate_2_unit_tests: ok, 218 ms) aprovados conforme EvidenceBundle."
+    },
+    {
+      "id": "T04",
+      "phase": "Fase 1",
+      "feature_key": "pseudonym_vault",
+      "title": "Implementar Cofre Local de Pseudonimização Reversível e validar H3",
+      "depends_on": [
+        "T03"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'core' (feature 'pseudonym_vault'): EvidenceBundle reporta passed == true com todos os gates aprovados (gate_1_hard_constraints: ok=true em 3ms; gate_2_unit_tests: ok=true em 253ms; feedback: \"TODOS OS GATES APROVADOS.\")."
+    },
+    {
+      "id": "T05",
+      "phase": "Fase 2",
+      "feature_key": "blind_ai_cli",
+      "title": "Construir CLI própria (`python -m blind_ai scan|sanitize|restore|benchmark`)",
+      "depends_on": [
+        "T02",
+        "T04"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado: EvidenceBundle para o domínio 'cli' (feature 'blind_ai_cli') apresentou passed == true, com todos os 3 gates aprovados (gate_1_hard_constraints: ok em 9ms; gate_2_unit_tests: ok em 1841ms; gate_3_cli_runtime: ok em 392ms)."
+    },
+    {
+      "id": "T06",
+      "phase": "Fase 3",
+      "feature_key": "contextual_detector",
+      "title": "Implementar Camada 3 experimental contextual e experimento científico H1 vs H2",
+      "depends_on": [
+        "T01",
+        "T03"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'core', feature 'contextual_detector': passed == true em todos os gates (gate_1_hard_constraints: ok=true em 17ms; gate_2_unit_tests: ok=true em 345ms). Feedback: TODOS OS GATES APROVADOS."
+    },
+    {
+      "id": "T07",
+      "phase": "Fase 4",
+      "feature_key": "local_http_proxy",
+      "title": "Implementar Proxy/Gateway HTTP local integrado ao core e validar probes ao vivo",
+      "depends_on": [
+        "T04",
+        "T06"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'proxy' (feature 'local_http_proxy'): EvidenceBundle com passed=true e todos os 3 gates aprovados (gate_1_hard_constraints: 5ms, gate_2_unit_tests: 1110ms, gate_3_http_runtime: 555ms - 2/2 probes validados ao vivo no Proxy HTTP)."
+    }
+  ]
+}
