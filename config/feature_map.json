@@ -135,6 +135,94 @@
           "expected_body_contains": "sanitized_text"
         }
       ]
+    },
+    "vault_security_and_ttl": {
+      "domain": "core",
+      "description": "Fase 5A: Criptografia autenticada em repouso (PBKDF2 + Encrypt-then-MAC stdlib), TTL de sessões e trilha de auditoria sem vazar segredos.",
+      "files": [
+        "src/blind_ai/core/secure_vault.py",
+        "tests/test_secure_vault.py"
+      ],
+      "invariants": [
+        "save_encrypted/load_encrypted protege o cofre em disco com passphrase (texto original NÃO aparece no arquivo cifrado).",
+        "Tampering no arquivo cifrado ou passphrase errada levanta ValueError.",
+        "TTLSessionStore expira sessões inativas automaticamente e AuditLogger nunca grava valores originais de segredos."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_secure_vault.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "adversarial_benchmark": {
+      "domain": "benchmark",
+      "description": "Fase 5B: Benchmark adversarial multi-linguagem (Python, JS/TS, YAML, JSON, SQL, logs) incluindo UUIDs/Git SHAs benignos e métricas completas.",
+      "files": [
+        "src/blind_ai/core/adversarial_benchmark.py",
+        "tests/test_adversarial_benchmark.py"
+      ],
+      "invariants": [
+        "Inclui pelo menos 15 casos sintéticos multi-linguagem (positivos estruturados/contextuais e negativos benignos como UUIDs e hashes Git).",
+        "Executa HybridScanner retornando Recall, Precision, FPR e latência média em ms.",
+        "100% fictício e stdlib Python 3.12."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_adversarial_benchmark.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "project_config_and_packaging": {
+      "domain": "core",
+      "description": "Fase 5C: Empacotamento pyproject.toml (entry point blind-ai) e carregador .blindai.toml via tomllib com allowlist e regras customizadas.",
+      "files": [
+        "pyproject.toml",
+        "src/blind_ai/core/config.py",
+        "tests/test_config.py"
+      ],
+      "invariants": [
+        "pyproject.toml válido parseável por tomllib declarando script blind-ai = 'blind_ai.cli.main:main'.",
+        "BlindAIConfig carrega .blindai.toml com allowlist_values, allowlist_patterns e extra_blocked_files.",
+        "Filtro de allowlist remove falsos positivos configurados sem afetar outros achados."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_config.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "openai_proxy_streaming_hardening": {
+      "domain": "proxy",
+      "description": "Fase 5D: Gateway compatível com /v1/chat/completions (JSON e SSE streaming com janela deslizante para restaurar placeholders quebrados) + hardening (Bearer auth, 413 Payload Too Large, TTL).",
+      "files": [
+        "src/blind_ai/proxy/openai_gateway.py",
+        "src/blind_ai/proxy/server.py",
+        "tests/test_openai_gateway.py"
+      ],
+      "invariants": [
+        "StreamRestorer restaura corretamente placeholders __BLIND_*__ mesmo divididos em 2 ou 3 chunks arbitrários.",
+        "POST /v1/chat/completions sanitiza mensagens na ida, repassa ao upstream local configurável (ou eco local se não configurado) e restaura na volta (JSON e SSE).",
+        "Hardening: --auth-token exige Authorization: Bearer (401 se ausente/inválido) e payload acima de max_body_bytes retorna HTTP 413.",
+        "Mantém 100% de compatibilidade com /health, /v1/sanitize, /v1/restore e /v1/proxy/echo."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_openai_gateway.py", "tests/test_proxy.py", "-v"],
+      "runtime_mode": "http_server",
+      "probes": [
+        {
+          "name": "proxy_healthcheck",
+          "method": "GET",
+          "path": "/health",
+          "expected_status": 200,
+          "expected_json_subset": { "status": "ok" }
+        },
+        {
+          "name": "proxy_openai_chat_completions_live",
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "payload": {
+            "model": "local-echo",
+            "messages": [
+              { "role": "user", "content": "chave sk-proj-FAKE1234567890abcdefghijklmnop" }
+            ]
+          },
+          "expected_status": 200,
+          "expected_body_contains": "choices"
+        }
+      ]
     }
   }
 }

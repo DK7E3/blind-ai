@@ -85,6 +85,55 @@
       "status": "approved",
       "attempts": 1,
       "last_note": "Aprovado para o domínio 'proxy' (feature 'local_http_proxy'): EvidenceBundle com passed=true e todos os 3 gates aprovados (gate_1_hard_constraints: 5ms, gate_2_unit_tests: 1110ms, gate_3_http_runtime: 555ms - 2/2 probes validados ao vivo no Proxy HTTP)."
+    },
+    {
+      "id": "T08",
+      "phase": "Fase 5",
+      "feature_key": "vault_security_and_ttl",
+      "title": "Implementar criptografia autenticada do cofre, TTL de sessões e trilha de auditoria segura",
+      "depends_on": [
+        "T04"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'core' (feature 'vault_security_and_ttl'): passed == true no EvidenceBundle, com gate_1_hard_constraints (ok: true, 8 ms) e gate_2_unit_tests (ok: true, 7017 ms) aprovados (\"TODOS OS GATES APROVADOS.\")."
+    },
+    {
+      "id": "T09",
+      "phase": "Fase 5",
+      "feature_key": "adversarial_benchmark",
+      "title": "Expandir benchmark adversarial multi-linguagem (Python, JS/TS, YAML, JSON, SQL, UUID/SHA benignos)",
+      "depends_on": [
+        "T06"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'benchmark' (feature 'adversarial_benchmark'): EvidenceBundle com passed=true; gate_1_hard_constraints (ok=true, 7 ms) e gate_2_unit_tests (ok=true, 305 ms) aprovados (\"TODOS OS GATES APROVADOS.\")."
+    },
+    {
+      "id": "T10",
+      "phase": "Fase 5",
+      "feature_key": "project_config_and_packaging",
+      "title": "Criar pyproject.toml instalável e suporte a .blindai.toml (allowlist e regras customizadas)",
+      "depends_on": [
+        "T05"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Feature 'project_config_and_packaging' (domínio 'core') aprovada. EvidenceBundle confirma passed == true com gate_1_hard_constraints (ok: true, 4ms) e gate_2_unit_tests (ok: true, 371ms) aprovados."
+    },
+    {
+      "id": "T11",
+      "phase": "Fase 5",
+      "feature_key": "openai_proxy_streaming_hardening",
+      "title": "Adicionar /v1/chat/completions (JSON + SSE streaming restorer) e hardening (Bearer auth, 413, TTL)",
+      "depends_on": [
+        "T07",
+        "T08"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'proxy' (feature 'openai_proxy_streaming_hardening'). EvidenceBundle confirma passed=true com todos os gates aprovados: gate_1_hard_constraints (46 ms), gate_2_unit_tests (4451 ms) e gate_3_http_runtime (586 ms, 2/2 probes ao vivo)."
     }
   ]
 }

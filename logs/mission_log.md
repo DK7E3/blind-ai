@@ -35,3 +35,23 @@
 - **Nota do PM:** Aprovado para o domínio 'proxy' (feature 'local_http_proxy'): EvidenceBundle com passed=true e todos os 3 gates aprovados (gate_1_hard_constraints: 5ms, gate_2_unit_tests: 1110ms, gate_3_http_runtime: 555ms - 2/2 probes validados ao vivo no Proxy HTTP).
 - **Evidência:** `{"passed": true, "results": [{"feature": "local_http_proxy", "domain": "proxy", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 5, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 1110, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_http_runtime", "ok": true, "ms": 555, "summary": "2/2 probe(s) validados ao vivo no Proxy HTTP."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
 
+## [2026-11-22 18:55:37] T08 — `vault_security_and_ttl` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado para o domínio 'core' (feature 'vault_security_and_ttl'): passed == true no EvidenceBundle, com gate_1_hard_constraints (ok: true, 8 ms) e gate_2_unit_tests (ok: true, 7017 ms) aprovados ("TODOS OS GATES APROVADOS.").
+- **Evidência:** `{"passed": true, "results": [{"feature": "vault_security_and_ttl", "domain": "core", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 8, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 7017, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 18:58:19] T09 — `adversarial_benchmark` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado para o domínio 'benchmark' (feature 'adversarial_benchmark'): EvidenceBundle com passed=true; gate_1_hard_constraints (ok=true, 7 ms) e gate_2_unit_tests (ok=true, 305 ms) aprovados ("TODOS OS GATES APROVADOS.").
+- **Evidência:** `{"passed": true, "results": [{"feature": "adversarial_benchmark", "domain": "benchmark", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 7, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 305, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 19:01:21] T10 — `project_config_and_packaging` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Feature 'project_config_and_packaging' (domínio 'core') aprovada. EvidenceBundle confirma passed == true com gate_1_hard_constraints (ok: true, 4ms) e gate_2_unit_tests (ok: true, 371ms) aprovados.
+- **Evidência:** `{"passed": true, "results": [{"feature": "project_config_and_packaging", "domain": "core", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 4, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 371, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 19:07:19] T11 — `openai_proxy_streaming_hardening` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado para o domínio 'proxy' (feature 'openai_proxy_streaming_hardening'). EvidenceBundle confirma passed=true com todos os gates aprovados: gate_1_hard_constraints (46 ms), gate_2_unit_tests (4451 ms) e gate_3_http_runtime (586 ms, 2/2 probes ao vivo).
+- **Evidência:** `{"passed": true, "results": [{"feature": "openai_proxy_streaming_hardening", "domain": "proxy", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 46, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 4451, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_http_runtime", "ok": true, "ms": 586, "summary": "2/2 probe(s) validados ao vivo no Proxy HTTP."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
