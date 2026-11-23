@@ -127,19 +127,13 @@ for step_idx in range(max_tasks):
     task["status"] = "in_progress"
     save_backlog(backlog)
 
-    # 1. PM (flash) emite WorkOrder concisa
-    pm_plan = await agent(
-        prompt=(
-            f"Você é o Gerente de Projetos do domínio '{domain}' no projeto blind-ai (Python 3.12, stdlib preferencial).\n"
-            f"Tarefa {tid}: {task['title']}\n"
-            f"Descrição da feature: {fcfg['description']}\n"
-            f"Arquivos permitidos: {allowed}\n"
-            f"Invariantes obrigatórias: {fcfg['invariants']}\n"
-            "Escreva instruções técnicas objetivas (máx 8 linhas) para o Executor implementar os arquivos e testes."
-        ),
-        schema=PM_PLAN_SCHEMA,
-        role=f"PM Plan ({tid})",
-        model="flash",
+    # 1. PM Plan determinístico a partir do Feature Map (0 tokens de LLM — economia estrutural)
+    invariants_bullets = "\n".join(f"- {inv}" for inv in fcfg["invariants"])
+    pm_instructions = (
+        f"Objetivo ({tid}): {task['title']}\n"
+        f"Especificação: {fcfg['description']}\n"
+        f"Arquivos permitidos: {allowed}\n"
+        f"Invariantes obrigatórias:\n{invariants_bullets}"
     )
 
     # 2. Executor com contexto persistente + loop de auto-correção
@@ -148,9 +142,8 @@ for step_idx in range(max_tasks):
             f"Você é o Agente Executor VERITAS do domínio '{domain}' no projeto blind-ai.\n"
             f"Workspace: {workspace}\n"
             f"REGRA INVIOLÁVEL: edite/crie APENAS os arquivos listados em {allowed}.\n"
-            f"Invariantes: {fcfg['invariants']}\n"
             "Use Python 3.12 com biblioteca padrão (sem exigir pip install externo). "
-            "Consulte apenas os arquivos existentes em src/blind_ai/ que forem dependências diretas desta tarefa."
+            "Mantenha 100% de compatibilidade com os testes existentes do projeto."
         ),
         role=f"Executor ({tid})",
         model="inherit",
@@ -164,8 +157,7 @@ for step_idx in range(max_tasks):
         attempts = attempt
         turn_prompt = (
             f"Tentativa {attempt}/{max_retries} — {tid}: {task['title']}\n"
-            f"Instruções do PM: {pm_plan['instructions']}\n"
-            f"Foco de verificação: {pm_plan['verification_focus']}\n"
+            f"{pm_instructions}\n"
         )
         if feedback:
             turn_prompt += f"FEEDBACK COMPACTO DO VERIFICADOR (corrija a causa raiz): {feedback}\n"
@@ -186,16 +178,21 @@ for step_idx in range(max_tasks):
 
     del worker
 
-    # 4. Revisão do PM baseada exclusivamente no EvidenceBundle compacto
-    review = await agent(
-        prompt=(
-            f"Você é o PM do domínio '{domain}'. Aprove SOMENTE se passed == true.\n"
-            f"EvidenceBundle compacto:\n{json.dumps(last_evidence, ensure_ascii=False)}"
-        ),
-        schema=PM_REVIEW_SCHEMA,
-        role=f"PM Review ({tid})",
-        model="flash",
+    # 4. Revisão determinística por evidência (0 tokens de LLM)
+    passed = bool(last_evidence and last_evidence.get("passed"))
+    res0 = last_evidence["results"][0] if (last_evidence and last_evidence.get("results")) else {}
+    gates_summary = ", ".join(
+        f"{g['gate']}={'ok' if g['ok'] else 'fail'}({g['ms']}ms)"
+        for g in res0.get("gates", [])
     )
+    review = {
+        "status": "approved" if passed else "escalated",
+        "note": (
+            f"Aprovado por evidência determinística ({gates_summary})."
+            if passed
+            else f"Escalonado após {attempts} tentativas: {res0.get('feedback', 'falha')}"
+        ),
+    }
 
     # 5. Persistência imediata do estado
     backlog = load_backlog()

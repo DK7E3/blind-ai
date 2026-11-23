@@ -14,6 +14,20 @@ import re
 
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>()]+")
 
+_URL_CREDENTIALS_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s\"'<>():@]+:(?P<secret>[^/\s\"'<>()@]+)@[^/\s\"'<>()]+"
+)
+
+_BEARER_TOKEN_RE = re.compile(
+    r"(?i)\b(?:Authorization\s*[:=]\s*)?Bearer\s+(?P<secret>[A-Za-z0-9._~+/=-]{16,})(?![A-Za-z0-9._~+/=-])"
+)
+
+_MIME_TYPE_RE = re.compile(
+    r"^(?:application|text|image|audio|video|multipart|font|model|message)/[A-Za-z0-9.+_-]+$"
+)
+
+_REGEX_LIKE_CHARS: frozenset[str] = frozenset("^$*+?()[]{}|\\")
+
 _REGEX_RULES: tuple[tuple[str, re.Pattern[str], float], ...] = (
     (
         "aws_access_key",
@@ -21,14 +35,40 @@ _REGEX_RULES: tuple[tuple[str, re.Pattern[str], float], ...] = (
         0.98,
     ),
     (
+        "anthropic_api_key",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])sk-ant-(?:api\d{2}-)?[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])"
+        ),
+        0.99,
+    ),
+    (
         "openai_api_key",
-        re.compile(r"(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
+        re.compile(r"(?<![A-Za-z0-9_-])sk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
+        0.98,
+    ),
+    (
+        "stripe_api_key",
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}(?![A-Za-z0-9_])"
+        ),
+        0.98,
+    ),
+    (
+        "slack_token",
+        re.compile(
+            r"(?<![A-Za-z0-9_-])xox[baprs]-[A-Za-z0-9-]{10,}(?![A-Za-z0-9_-])"
+        ),
+        0.98,
+    ),
+    (
+        "google_api_key",
+        re.compile(r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"),
         0.98,
     ),
     (
         "github_token",
         re.compile(
-            r"(?<![A-Za-z0-9_])(?:gh[pous]_|github_pat_)[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])"
+            r"(?<![A-Za-z0-9_])(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])"
         ),
         0.98,
     ),
@@ -38,6 +78,14 @@ _REGEX_RULES: tuple[tuple[str, re.Pattern[str], float], ...] = (
             r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])"
         ),
         0.95,
+    ),
+    (
+        "pem_private_key",
+        re.compile(
+            r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
+            r"|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
+        ),
+        0.99,
     ),
 )
 
@@ -166,6 +214,40 @@ class DeterministicScanner:
                         confidence=confidence,
                     )
                 )
+
+        for match in _URL_CREDENTIALS_RE.finditer(text):
+            start, end = match.span("secret")
+            secret = match.group("secret")
+            if not secret or secret.startswith("__BLIND_"):
+                continue
+            findings.append(
+                Finding(
+                    kind="url_credentials",
+                    value=secret,
+                    start=start,
+                    end=end,
+                    line=_line_number(text, start),
+                    source="regex",
+                    confidence=0.97,
+                )
+            )
+
+        for match in _BEARER_TOKEN_RE.finditer(text):
+            start, end = match.span("secret")
+            token = match.group("secret")
+            if not token or token.startswith("__BLIND_"):
+                continue
+            findings.append(
+                Finding(
+                    kind="bearer_token",
+                    value=token,
+                    start=start,
+                    end=end,
+                    line=_line_number(text, start),
+                    source="regex",
+                    confidence=0.92,
+                )
+            )
 
         for match in _IPV4_RE.finditer(text):
             raw_ip = match.group(0)
@@ -298,7 +380,13 @@ class DeterministicScanner:
             return False
         if any(ch.isspace() for ch in value):
             return False
+        if value.startswith("__BLIND_") and value.endswith("__"):
+            return False
         if _URL_RE.match(value):
+            return False
+        if _MIME_TYPE_RE.match(value):
+            return False
+        if any(ch in _REGEX_LIKE_CHARS for ch in value):
             return False
         if shannon_entropy(value) < self.min_entropy:
             return False
@@ -309,8 +397,10 @@ class DeterministicScanner:
         has_lower = any(ch.islower() for ch in value)
         has_upper = any(ch.isupper() for ch in value)
         has_digit = any(ch.isdigit() for ch in value)
+        if not has_digit:
+            return False
         class_count = int(has_lower) + int(has_upper) + int(has_digit)
-        return class_count >= 2 and (has_digit or (has_lower and has_upper))
+        return class_count >= 2
 
     @staticmethod
     def _node_span(

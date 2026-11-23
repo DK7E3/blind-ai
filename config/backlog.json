@@ -175,6 +175,58 @@
       "status": "approved",
       "attempts": 1,
       "last_note": "Aprovado para o domínio 'benchmark' (feature 'e2e_safe_context_validation'): EvidenceBundle reportou passed=true com gate_1_hard_constraints (ok=true, 1ms) e gate_2_unit_tests (ok=true, 2862ms) aprovados (\"TODOS OS GATES APROVADOS.\")."
+    },
+    {
+      "id": "T15",
+      "phase": "Fase 7",
+      "feature_key": "scanner_v2_precision_and_recall",
+      "title": "Expandir detectores (URL credentials, PEM, Stripe, Slack, Google, Anthropic, Bearer) e eliminar FPs em CamelCase/regex",
+      "depends_on": [
+        "T03",
+        "T09"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(7ms), gate_2_unit_tests=ok(277ms))."
+    },
+    {
+      "id": "T16",
+      "phase": "Fase 7",
+      "feature_key": "packer_hybrid_and_limits",
+      "title": "Integrar HybridScanner, BlindAIConfig, bloqueio de lockfiles, max_file_bytes e max_tokens no ContextPacker",
+      "depends_on": [
+        "T12",
+        "T15"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(11ms), gate_2_unit_tests=ok(4308ms))."
+    },
+    {
+      "id": "T17",
+      "phase": "Fase 7",
+      "feature_key": "proxy_upstream_auth_and_tool_calls",
+      "title": "Adicionar --upstream-api-key e sanitização/restauração de tool_calls (JSON e SSE) no gateway OpenAI",
+      "depends_on": [
+        "T11",
+        "T15"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(27ms), gate_2_unit_tests=ok(5252ms), gate_3_http_runtime=ok(571ms))."
+    },
+    {
+      "id": "T18",
+      "phase": "Fase 7",
+      "feature_key": "cli_apply_staged_git_and_env_passphrase",
+      "title": "Implementar `blind-ai apply`, leitura do índice Git em `scan --staged`, `BLIND_AI_PASSPHRASE` e HybridScanner na CLI",
+      "depends_on": [
+        "T13",
+        "T16"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(32ms), gate_2_unit_tests=ok(12139ms), gate_3_cli_runtime=ok(713ms))."
     }
   ]
 }

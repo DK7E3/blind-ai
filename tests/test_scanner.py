@@ -151,6 +151,90 @@ class TestDeterministicScannerDetections(unittest.TestCase):
             with self.subTest(sample=sample[:30]):
                 self.assertEqual(self.scanner.scan_text(sample), [])
 
+    def test_detects_url_credentials_in_postgres_and_https(self) -> None:
+        text = (
+            'DB_URL = "postgres://admin:SuperS3cret!@db.internal:5432/prod"\n'
+            'API_URL = "https://user:p4ssw0rd@host/api"\n'
+            'PUBLIC_URL = "https://docs.example.org/v1/guide"\n'
+        )
+        findings = self.scanner.scan_text(text)
+        self.assertEqual(
+            [(f.kind, f.value, f.line) for f in findings],
+            [
+                ("url_credentials", "SuperS3cret!", 1),
+                ("url_credentials", "p4ssw0rd", 2),
+            ],
+        )
+
+    def test_detects_pem_stripe_slack_google_anthropic_and_bearer(self) -> None:
+        stripe_sk = "_".join(("sk", "live", "51FakeStripeSecret000011112222"))
+        stripe_rk = "_".join(("rk", "live", "51FakeRestricted000011112222"))
+        slack_bot = "-".join(("xoxb", "123456789012", "1234567890123", "FakeSlackBotToken99"))
+        slack_user = "-".join(("xoxp", "123456789012", "1234567890123", "FakeSlackUserToken88"))
+        google_key = "AIza" + "SyFakeGoogleApiKey00001111222233334"
+        anthropic_key = "-".join(("sk", "ant", "api03", "FakeAnthropicKey0000111122223333"))
+        pem_hdr = "-----BEGIN " + "RSA PRIVATE KEY-----"
+        pem_ftr = "-----END " + "RSA PRIVATE KEY-----"
+        text = (
+            f"{pem_hdr}\n"
+            "MIIEpAIBAAKCAQEA0fakeKeyMaterial0000111122223333\n"
+            f"{pem_ftr}\n"
+            f"STRIPE_SECRET={stripe_sk}\n"
+            f"STRIPE_RESTRICTED={stripe_rk}\n"
+            f"SLACK_BOT={slack_bot}\n"
+            f"SLACK_USER={slack_user}\n"
+            f"GOOGLE_KEY={google_key}\n"
+            f"ANTHROPIC_KEY={anthropic_key}\n"
+            "Authorization: Bearer opaqueBearerTokenValue9988776655\n"
+        )
+        findings = self.scanner.scan_text(text)
+        by_kind = {f.kind: [x.value for x in findings if x.kind == f.kind] for f in findings}
+        self.assertIn("pem_private_key", by_kind)
+        self.assertEqual(
+            by_kind["stripe_api_key"],
+            [stripe_sk, stripe_rk],
+        )
+        self.assertEqual(
+            by_kind["slack_token"],
+            [slack_bot, slack_user],
+        )
+        self.assertEqual(
+            by_kind["google_api_key"],
+            [google_key],
+        )
+        self.assertEqual(
+            by_kind["anthropic_api_key"],
+            [anthropic_key],
+        )
+        self.assertEqual(
+            by_kind["bearer_token"],
+            ["opaqueBearerTokenValue9988776655"],
+        )
+
+    def test_ignores_camelcase_regex_and_mime_outside_sensitive_context(self) -> None:
+        code = (
+            'HANDLER_CLASS = "SimpleHTTPRequestHandler"\n'
+            ' SERIALIZER_NAME = " JSONWebSignatureSerializerConfiguration "\n'.strip() + "\n"
+            'MIME_JSON_LD = "application/vnd.acme.custom+json"\n'
+            'REGEX_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==)?$"\n'
+        )
+        self.assertEqual(self.scanner.scan_text(code), [])
+        self.assertFalse(
+            self.scanner._is_high_entropy_token(
+                "SimpleHTTPRequestHandler", sensitive_context=False
+            )
+        )
+        self.assertFalse(
+            self.scanner._is_high_entropy_token(
+                "application/vnd.acme.custom+json", sensitive_context=False
+            )
+        )
+        self.assertFalse(
+            self.scanner._is_high_entropy_token(
+                r"^(?:[A-Za-z0-9+/]{4})*$", sensitive_context=False
+            )
+        )
+
 
 class TestHypothesisH1Benchmark(unittest.TestCase):
     """Validates Hypothesis H1 on the synthetic benchmark dataset."""

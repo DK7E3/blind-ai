@@ -5,10 +5,12 @@ from __future__ import annotations
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import sys
 import threading
 import unittest
+from unittest.mock import patch
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -164,6 +166,7 @@ class _MockUpstreamServer(ThreadingHTTPServer):
 
     def __init__(self, server_address: tuple[str, int]) -> None:
         self.received_requests: list[dict[str, Any]] = []
+        self.received_headers: list[dict[str, str]] = []
         super().__init__(server_address, _MockUpstreamHandler)
 
 
@@ -177,34 +180,69 @@ class _MockUpstreamHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode("utf-8"))
         self.server.received_requests.append(body)
+        self.server.received_headers.append(dict(self.headers.items()))
 
-        user_content = body["messages"][-1]["content"]
+        last_msg = body["messages"][-1]
+        user_content = last_msg.get("content") or ""
         reply_text = f"Upstream saw: {user_content}"
         model = body.get("model", "mock-model")
+        inbound_tool_calls = last_msg.get("tool_calls")
 
         if body.get("stream"):
             self.send_response(int(HTTPStatus.OK))
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.end_headers()
 
-            # Intentionally slice into small 5-char chunks to split placeholders across 3+ events
-            for idx in range(0, len(reply_text), 5):
-                piece = reply_text[idx : idx + 5]
-                chunk = {
-                    "id": "chatcmpl-upstream-sse",
-                    "object": "chat.completion.chunk",
-                    "created": 1700000000,
-                    "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": piece},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
-                self.wfile.flush()
+            if isinstance(inbound_tool_calls, list) and inbound_tool_calls:
+                tc_args = inbound_tool_calls[0]["function"]["arguments"]
+                for idx in range(0, len(tc_args), 5):
+                    piece = tc_args[idx : idx + 5]
+                    chunk = {
+                        "id": "chatcmpl-upstream-sse-tc",
+                        "object": "chat.completion.chunk",
+                        "created": 1700000000,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "deploy_app",
+                                                "arguments": piece,
+                                            },
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+            else:
+                # Intentionally slice into small 5-char chunks to split placeholders across 3+ events
+                for idx in range(0, len(reply_text), 5):
+                    piece = reply_text[idx : idx + 5]
+                    chunk = {
+                        "id": "chatcmpl-upstream-sse",
+                        "object": "chat.completion.chunk",
+                        "created": 1700000000,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": piece},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
 
             stop_chunk = {
                 "id": "chatcmpl-upstream-sse",
@@ -218,6 +256,10 @@ class _MockUpstreamHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             return
 
+        message_obj: dict[str, Any] = {"role": "assistant", "content": reply_text}
+        if isinstance(inbound_tool_calls, list) and inbound_tool_calls:
+            message_obj["tool_calls"] = inbound_tool_calls
+
         resp_payload = {
             "id": "chatcmpl-upstream-json",
             "object": "chat.completion",
@@ -226,7 +268,7 @@ class _MockUpstreamHandler(BaseHTTPRequestHandler):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": reply_text},
+                    "message": message_obj,
                     "finish_reason": "stop",
                 }
             ],
@@ -497,6 +539,100 @@ class OpenAIGatewayIntegrationTests(unittest.TestCase):
         t[0] = 6.0
         self.assertFalse(store.has_session(sid))
         self.assertIsNone(store.restore(sid, san))
+
+    def test_upstream_api_key_and_tool_calls_json_and_sse(self) -> None:
+        upstream = _MockUpstreamServer(("127.0.0.1", 0))
+        upstream_url, upstream_thread = _start_server(upstream, "mock-upstream-tc")
+        upstream_key = "up-secret-key-999"
+        proxy = create_server(
+            host="127.0.0.1",
+            port=0,
+            quiet=True,
+            upstream_url=upstream_url,
+            upstream_api_key=upstream_key,
+        )
+        proxy_url, proxy_thread = _start_server(proxy, "blind-ai-tc-proxy")
+
+        try:
+            secret = "ghp_ToolCallSecret1234567890ABCDEFGH"
+            ip_addr = "10.99.88.77"
+            raw_args = json.dumps({"token": secret, "host": ip_addr})
+            tool_call_msg = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "deploy_app",
+                            "arguments": raw_args,
+                        },
+                    }
+                ],
+            }
+
+            # 1) JSON roundtrip with tool_calls and upstream_api_key
+            status, body, _ = _http_json(
+                f"{proxy_url}/v1/chat/completions",
+                payload={
+                    "model": "test-tc",
+                    "messages": [tool_call_msg],
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                upstream.received_headers[0].get("Authorization"),
+                f"Bearer {upstream_key}",
+            )
+            sent_tc_args = upstream.received_requests[0]["messages"][0]["tool_calls"][0][
+                "function"
+            ]["arguments"]
+            self.assertNotIn(secret, sent_tc_args)
+            self.assertNotIn(ip_addr, sent_tc_args)
+            self.assertIn("__BLIND_", sent_tc_args)
+
+            restored_tc_args = body["choices"][0]["message"]["tool_calls"][0]["function"][
+                "arguments"
+            ]
+            self.assertEqual(restored_tc_args, raw_args)
+
+            # 2) SSE roundtrip with delta.tool_calls and env var BLIND_AI_UPSTREAM_API_KEY
+            proxy.upstream_api_key = None
+            with patch.dict(
+                os.environ, {"BLIND_AI_UPSTREAM_API_KEY": "env-upstream-key-777"}
+            ):
+                sse_status, _, events, _ = _http_sse(
+                    f"{proxy_url}/v1/chat/completions",
+                    payload={
+                        "model": "test-tc",
+                        "stream": True,
+                        "messages": [tool_call_msg],
+                    },
+                )
+            self.assertEqual(sse_status, 200)
+            self.assertEqual(
+                upstream.received_headers[1].get("Authorization"),
+                "Bearer env-upstream-key-777",
+            )
+            self.assertEqual(events[-1], "[DONE]")
+
+            reconstructed_args = ""
+            for raw_event in events[:-1]:
+                chunk = json.loads(raw_event)
+                delta = chunk["choices"][0]["delta"]
+                for tc in delta.get("tool_calls", []):
+                    reconstructed_args += tc.get("function", {}).get("arguments", "")
+            self.assertEqual(reconstructed_args, raw_args)
+
+            # 3) CLI arg parser supports --upstream-api-key
+            parsed_args = build_arg_parser().parse_args(
+                ["--upstream-api-key", "cli-up-key"]
+            )
+            self.assertEqual(parsed_args.upstream_api_key, "cli-up-key")
+        finally:
+            _stop_server(proxy, proxy_thread)
+            _stop_server(upstream, upstream_thread)
 
 
 if __name__ == "__main__":

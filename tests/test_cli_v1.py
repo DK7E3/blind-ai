@@ -386,6 +386,222 @@ class TestProxyAndStagedScanCLI(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("not a git repository", err)
 
+    def test_scan_staged_reads_git_index_not_unstaged_working_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            init_res = subprocess.run(
+                ["git", "init"],
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if init_res.returncode != 0:
+                self.skipTest("git is not available in this environment")
+
+            tracked = repo / "config.py"
+            tracked.write_text("SAFE_VALUE = 123\n", encoding="utf-8")
+            subprocess.run(["git", "add", "config.py"], cwd=str(repo), check=True)
+
+            # Working tree has an unstaged secret, while staged git index is clean.
+            tracked.write_text(
+                'AWS_KEY = "AKIAFAKE0000EXAMPLE1"\n', encoding="utf-8"
+            )
+
+            prev_cwd = Path.cwd()
+            try:
+                os.chdir(repo)
+                code, out, err = _run_cli(
+                    ["scan", "--staged", "--format", "json", "--strict"]
+                )
+                self.assertEqual(code, 0, msg=err)
+                payload = json.loads(out)
+                self.assertEqual(payload["total_findings"], 0)
+
+                # Now stage the secret and overwrite disk with clean content;
+                # scan --staged must still catch the secret in the git index.
+                subprocess.run(["git", "add", "config.py"], cwd=str(repo), check=True)
+                tracked.write_text("SAFE_VALUE = 456\n", encoding="utf-8")
+
+                code2, out2, err2 = _run_cli(
+                    ["scan", "--staged", "--format", "json", "--strict"]
+                )
+                self.assertEqual(code2, 1, msg=err2)
+                payload2 = json.loads(out2)
+                self.assertEqual(payload2["total_findings"], 1)
+                self.assertEqual(payload2["findings"][0]["kind"], "aws_access_key")
+            finally:
+                os.chdir(prev_cwd)
+
+
+class TestApplyEnvPassphraseAndHybridCLI(unittest.TestCase):
+    """Tests for ``blind-ai apply``, ``BLIND_AI_PASSPHRASE``, and ``HybridScanner`` in CLI."""
+
+    def test_apply_restores_markdown_blocks_and_blocks_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            vault_path = base / "session.vault.enc"
+            target_dir = base / "restored_repo"
+            passphrase = "env-vault-secret-2026"
+
+            sample = (
+                'AWS_KEY = "AKIAFAKE0000EXAMPLE1"\n'
+                "# temporary staging password: WinterFictionalPass!2026\n"
+            )
+            with mock.patch.dict(
+                os.environ, {"BLIND_AI_PASSPHRASE": passphrase}, clear=False
+            ):
+                san_code, san_out, san_err = _run_cli(
+                    ["sanitize", "-", "--vault", str(vault_path)],
+                    stdin_text=sample,
+                )
+            self.assertEqual(san_code, 0, msg=san_err)
+            self.assertTrue(vault_path.read_bytes().startswith(b"BLINDVLT\x01"))
+            self.assertNotIn("AKIAFAKE0000EXAMPLE1", san_out)
+            self.assertNotIn("WinterFictionalPass!2026", san_out)
+
+            ai_markdown = (
+                "Here are the updated files:\n\n"
+                "### `src/settings.py`\n\n"
+                "```python\n"
+                f"{san_out.rstrip()}\n"
+                "```\n\n"
+                "### `README.md`\n"
+                "````markdown\n"
+                "Updated configuration for staging.\n"
+                "````\n"
+            )
+            md_path = base / "ai_reply.md"
+            md_path.write_text(ai_markdown, encoding="utf-8")
+
+            with mock.patch.dict(
+                os.environ, {"BLIND_AI_PASSPHRASE": passphrase}, clear=False
+            ):
+                app_code, app_out, app_err = _run_cli(
+                    [
+                        "apply",
+                        str(md_path),
+                        "--vault",
+                        str(vault_path),
+                        "--target-dir",
+                        str(target_dir),
+                        "--json",
+                    ]
+                )
+            self.assertEqual(app_code, 0, msg=app_err)
+            summary = json.loads(app_out)
+            self.assertEqual(summary["applied_count"], 2)
+            self.assertEqual(
+                summary["applied_files"], ["src/settings.py", "README.md"]
+            )
+
+            restored_py = (target_dir / "src" / "settings.py").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("AKIAFAKE0000EXAMPLE1", restored_py)
+            self.assertIn("WinterFictionalPass!2026", restored_py)
+
+            # Path traversal via '..' must be rejected with non-zero exit code.
+            traversal_md = (
+                "### `../escaped.py`\n"
+                "```python\n"
+                "x = 1\n"
+                "```\n"
+            )
+            with mock.patch.dict(
+                os.environ, {"BLIND_AI_PASSPHRASE": passphrase}, clear=False
+            ):
+                bad_code, _, bad_err = _run_cli(
+                    [
+                        "apply",
+                        "-",
+                        "--vault",
+                        str(vault_path),
+                        "--target-dir",
+                        str(target_dir),
+                    ],
+                    stdin_text=traversal_md,
+                )
+            self.assertNotEqual(bad_code, 0)
+            self.assertIn("traversal", bad_err.lower())
+            self.assertFalse((base / "escaped.py").exists())
+
+            # Absolute path must also be rejected.
+            abs_md = (
+                "### `/etc/passwd`\n"
+                "```text\n"
+                "root\n"
+                "```\n"
+            )
+            with mock.patch.dict(
+                os.environ, {"BLIND_AI_PASSPHRASE": passphrase}, clear=False
+            ):
+                abs_code, _, abs_err = _run_cli(
+                    [
+                        "apply",
+                        "-",
+                        "--vault",
+                        str(vault_path),
+                        "--target-dir",
+                        str(target_dir),
+                    ],
+                    stdin_text=abs_md,
+                )
+            self.assertNotEqual(abs_code, 0)
+            self.assertIn("absolute", abs_err.lower())
+
+    def test_scan_and_pack_use_hybrid_scanner_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            (repo / ".blindai.toml").write_text(
+                'allowlist_values = ["AKIAIOSFODNN7EXAMPLE"]\n'
+                "[rules]\n"
+                'internal_ticket = "OPS-[0-9]{4}"\n',
+                encoding="utf-8",
+            )
+            (repo / "notes.py").write_text(
+                'ALLOWED_DEMO = "AKIAIOSFODNN7EXAMPLE"\n'
+                'TICKET = "OPS-4242"\n'
+                "# emergency database password: WinterFictionalPass!2026\n",
+                encoding="utf-8",
+            )
+
+            scan_code, scan_out, scan_err = _run_cli(
+                ["scan", str(repo), "--format", "json", "--strict"]
+            )
+            self.assertEqual(scan_code, 1, msg=scan_err)
+            scan_payload = json.loads(scan_out)
+            kinds = {item["kind"] for item in scan_payload["findings"]}
+            values = {item["value"] for item in scan_payload["findings"]}
+            self.assertIn("sensitive_comment", kinds)
+            self.assertIn("internal_ticket", kinds)
+            self.assertNotIn("AKIAIOSFODNN7EXAMPLE", values)
+
+            vault_path = Path(tmpdir) / "vault.bvlt"
+            bundle_path = Path(tmpdir) / "bundle.md"
+            with mock.patch.dict(
+                os.environ, {"BLIND_AI_PASSPHRASE": "env-pack-pass"}, clear=False
+            ):
+                pack_code, pack_out, pack_err = _run_cli(
+                    [
+                        "pack",
+                        str(repo),
+                        "-o",
+                        str(bundle_path),
+                        "--vault",
+                        str(vault_path),
+                        "--json",
+                    ]
+                )
+            self.assertEqual(pack_code, 0, msg=pack_err)
+            pack_summary = json.loads(pack_out)
+            self.assertTrue(pack_summary["encrypted"])
+            bundle_text = bundle_path.read_text(encoding="utf-8")
+            self.assertNotIn("WinterFictionalPass!2026", bundle_text)
+            self.assertNotIn("OPS-4242", bundle_text)
+            self.assertIn("AKIAIOSFODNN7EXAMPLE", bundle_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,7 @@
 """Command-line interface for Blind AI (``python -m blind_ai``).
 
 Uses only the Python 3.12 standard library and exposes ``scan``, ``sanitize``,
-``restore``, ``pack``, ``proxy``, and ``benchmark`` subcommands.
+``restore``, ``pack``, ``apply``, ``proxy``, and ``benchmark`` subcommands.
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ import argparse
 from collections.abc import Sequence
 from dataclasses import asdict
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import sys
 import tomllib
@@ -22,11 +24,25 @@ from blind_ai.core.benchmark import (
     evaluate_detector,
 )
 from blind_ai.core.config import BlindAIConfig
-from blind_ai.core.packer import ContextPacker
+from blind_ai.core.contextual import HybridScanner
+from blind_ai.core.packer import ContextPacker, ScannerProtocol
 from blind_ai.core.scanner import DeterministicScanner, Finding
 from blind_ai.core.secure_vault import load_encrypted, save_encrypted
 from blind_ai.core.vault import PseudonymVault
 from blind_ai.proxy import server as proxy_server
+
+_APPLY_HEADING_RE = re.compile(r"^\s*###\s+`([^`\r\n]+)`\s*$")
+_FENCE_OPEN_RE = re.compile(r"^(`{3,})([^\r\n`]*)$")
+
+
+def _resolve_passphrase(explicit_passphrase: str | None) -> str | None:
+    """Resolve passphrase from CLI ``--passphrase`` or ``BLIND_AI_PASSPHRASE`` env var."""
+    if explicit_passphrase is not None:
+        return explicit_passphrase
+    env_val = os.environ.get("BLIND_AI_PASSPHRASE")
+    if env_val:
+        return env_val
+    return None
 
 
 def _read_input_text(source: str) -> str:
@@ -61,7 +77,7 @@ def _load_config(
 
 
 def _scan_with_config(
-    scanner: DeterministicScanner,
+    scanner: ScannerProtocol,
     text: str,
     cfg: BlindAIConfig,
 ) -> list[Finding]:
@@ -142,6 +158,120 @@ def _collect_staged_targets() -> tuple[list[Path], str | None]:
     return targets, None
 
 
+def _read_staged_target_text(target: Path) -> str:
+    """Read the git index (staged) content for *target* via ``git show :<posix_path>``.
+
+    Falls back to reading *target* from disk if ``git show`` fails or returns
+    non-zero outside a standard git index context.
+    """
+    posix_path = target.as_posix()
+    try:
+        result = subprocess.run(
+            ["git", "show", f":{posix_path}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if result.returncode == 0 and isinstance(result.stdout, str):
+            return result.stdout
+    except OSError:
+        pass
+    return target.read_text(encoding="utf-8", errors="replace")
+
+
+def _extract_markdown_file_blocks(markdown_text: str) -> list[tuple[str, str]]:
+    """Extract ``(rel_path, code_body)`` pairs from ``### `path```` + fenced code blocks."""
+    lines = markdown_text.splitlines()
+    blocks: list[tuple[str, str]] = []
+    idx = 0
+    total = len(lines)
+
+    while idx < total:
+        heading_match = _APPLY_HEADING_RE.match(lines[idx])
+        if heading_match is None:
+            idx += 1
+            continue
+
+        rel_path = heading_match.group(1).strip()
+        idx += 1
+
+        # Skip blank lines between the ### `path` heading and the opening code fence.
+        while idx < total and not lines[idx].strip():
+            idx += 1
+
+        if idx >= total:
+            break
+
+        fence_match = _FENCE_OPEN_RE.match(lines[idx].strip())
+        if fence_match is None:
+            continue
+
+        fence_ticks = fence_match.group(1)
+        idx += 1
+        body_lines: list[str] = []
+        closed = False
+
+        while idx < total:
+            stripped_line = lines[idx].strip()
+            if (
+                stripped_line.startswith(fence_ticks)
+                and set(stripped_line) == {"`"}
+                and len(stripped_line) >= len(fence_ticks)
+            ):
+                closed = True
+                idx += 1
+                break
+            body_lines.append(lines[idx])
+            idx += 1
+
+        if closed:
+            content = "\n".join(body_lines)
+            if content and not content.endswith("\n"):
+                content += "\n"
+            blocks.append((rel_path, content))
+
+    return blocks
+
+
+def _validate_safe_target_path(target_root: Path, raw_rel_path: str) -> Path:
+    """Validate that *raw_rel_path* is a safe relative path inside *target_root*.
+
+    Rejects empty paths, absolute paths, Windows drive paths, and any ``..``
+    traversal component.
+    """
+    cleaned = raw_rel_path.strip()
+    if not cleaned:
+        raise ValueError("Empty file path in Markdown block.")
+
+    if cleaned.startswith(("/", "\\")) or (len(cleaned) >= 2 and cleaned[1] == ":"):
+        raise ValueError(f"Absolute or drive-prefixed path is not allowed: {raw_rel_path!r}")
+
+    normalized = cleaned.replace("\\", "/")
+    posix_path = PurePosixPath(normalized)
+    if posix_path.is_absolute():
+        raise ValueError(f"Absolute path is not allowed: {raw_rel_path!r}")
+
+    parts = posix_path.parts
+    if not parts or any(part in ("..", "") for part in parts) or parts == (".",):
+        raise ValueError(f"Unsafe path traversal detected in path: {raw_rel_path!r}")
+
+    resolved_root = target_root.resolve()
+    candidate = (resolved_root / Path(*parts)).resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Path escapes target directory {resolved_root}: {raw_rel_path!r}"
+        ) from exc
+
+    if candidate == resolved_root:
+        raise ValueError(f"Invalid target file path: {raw_rel_path!r}")
+
+    return candidate
+
+
 def _cmd_scan(args: argparse.Namespace) -> int:
     """Execute the ``scan`` subcommand."""
     start_dir: Path | None = None
@@ -157,12 +287,14 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         return 2
 
     targets: list[Path | str] = []
+    staged_set: set[Path] = set()
     if args.staged:
         staged_targets, git_error = _collect_staged_targets()
         if git_error is not None:
             sys.stderr.write(f"{git_error}\n")
             return 2
         targets.extend(staged_targets)
+        staged_set.update(staged_targets)
         if args.paths:
             extra_targets, missing = _collect_scan_targets(args.paths)
             if missing:
@@ -178,7 +310,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             return 2
 
     file_filter = cfg.build_file_filter()
-    scanner = DeterministicScanner()
+    scanner = HybridScanner()
 
     blocked_files: list[dict[str, Any]] = []
     findings_payload: list[dict[str, Any]] = []
@@ -200,7 +332,10 @@ def _cmd_scan(args: argparse.Namespace) -> int:
                 )
                 continue
             try:
-                text = target.read_text(encoding="utf-8", errors="replace")
+                if args.staged and target in staged_set:
+                    text = _read_staged_target_text(target)
+                else:
+                    text = target.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
                 sys.stderr.write(f"Error reading {target}: {exc}\n")
                 return 2
@@ -262,11 +397,12 @@ def _cmd_sanitize(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Error loading config: {exc}\n")
         return 2
 
+    passphrase = _resolve_passphrase(args.passphrase)
     vault_path = Path(args.vault)
     try:
         if vault_path.exists():
-            if args.passphrase is not None:
-                vault = load_encrypted(vault_path, args.passphrase)
+            if passphrase is not None:
+                vault = load_encrypted(vault_path, passphrase)
             else:
                 vault = PseudonymVault.load(vault_path)
         else:
@@ -281,12 +417,12 @@ def _cmd_sanitize(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Error reading input {args.input}: {exc}\n")
         return 1
 
-    findings = _scan_with_config(DeterministicScanner(), raw_text, cfg)
+    findings = _scan_with_config(HybridScanner(), raw_text, cfg)
     sanitized_text = vault.sanitize(raw_text, findings=findings)
 
     try:
-        if args.passphrase is not None:
-            save_encrypted(vault, vault_path, args.passphrase)
+        if passphrase is not None:
+            save_encrypted(vault, vault_path, passphrase)
         else:
             vault.save(vault_path)
     except (OSError, ValueError) as exc:
@@ -311,14 +447,15 @@ def _cmd_restore(args: argparse.Namespace) -> int:
             sys.stderr.write(f"Error loading config: {exc}\n")
             return 2
 
+    passphrase = _resolve_passphrase(args.passphrase)
     vault_path = Path(args.vault)
     if not vault_path.exists():
         sys.stderr.write(f"Error: vault file not found: {vault_path}\n")
         return 1
 
     try:
-        if args.passphrase is not None:
-            vault = load_encrypted(vault_path, args.passphrase)
+        if passphrase is not None:
+            vault = load_encrypted(vault_path, passphrase)
         else:
             vault = PseudonymVault.load(vault_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -351,8 +488,10 @@ def _cmd_pack(args: argparse.Namespace) -> int:
         return 2
 
     packer = ContextPacker(
+        scanner=HybridScanner(),
         file_filter=cfg.build_file_filter(),
         proprietary_terms=cfg.proprietary_terms,
+        config=cfg,
     )
     try:
         result = packer.pack(args.directory)
@@ -360,12 +499,13 @@ def _cmd_pack(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Error packing directory {args.directory}: {exc}\n")
         return 2
 
+    passphrase = _resolve_passphrase(args.passphrase)
     vault_path = Path(args.vault) if args.vault is not None else None
-    encrypted = vault_path is not None and args.passphrase is not None
+    encrypted = vault_path is not None and passphrase is not None
     if vault_path is not None:
         try:
-            if args.passphrase is not None:
-                save_encrypted(result.vault, vault_path, args.passphrase)
+            if passphrase is not None:
+                save_encrypted(result.vault, vault_path, passphrase)
             else:
                 result.vault.save(vault_path)
         except (OSError, ValueError) as exc:
@@ -407,6 +547,73 @@ def _cmd_pack(args: argparse.Namespace) -> int:
             f"({result.blocked_count} blocked, ~{result.estimated_tokens} tokens, "
             f"{len(result.vault.placeholder_to_value)} placeholder(s)) "
             f"-> {args.output}{vault_info}\n"
+        )
+
+    return 0
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    """Execute the ``apply`` subcommand to restore and write files from Markdown blocks."""
+    passphrase = _resolve_passphrase(args.passphrase)
+    vault_path = Path(args.vault)
+    if not vault_path.exists():
+        sys.stderr.write(f"Error: vault file not found: {vault_path}\n")
+        return 1
+
+    try:
+        if passphrase is not None:
+            vault = load_encrypted(vault_path, passphrase)
+        else:
+            vault = PseudonymVault.load(vault_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"Error loading vault {vault_path}: {exc}\n")
+        return 1
+
+    try:
+        markdown_text = _read_input_text(args.input)
+    except OSError as exc:
+        sys.stderr.write(f"Error reading input {args.input}: {exc}\n")
+        return 1
+
+    blocks = _extract_markdown_file_blocks(markdown_text)
+    if not blocks:
+        sys.stderr.write("Error: no ### `path` file blocks found in input.\n")
+        return 1
+
+    target_root = Path(args.target_dir)
+    planned_writes: list[tuple[str, Path, str]] = []
+    for raw_rel_path, code_body in blocks:
+        try:
+            dest_path = _validate_safe_target_path(target_root, raw_rel_path)
+        except ValueError as exc:
+            sys.stderr.write(f"Error applying block {raw_rel_path!r}: {exc}\n")
+            return 1
+        restored_body = vault.restore(code_body)
+        normalized_rel = PurePosixPath(raw_rel_path.strip().replace("\\", "/")).as_posix()
+        planned_writes.append((normalized_rel, dest_path, restored_body))
+
+    applied_files: list[str] = []
+    try:
+        for normalized_rel, dest_path, restored_body in planned_writes:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_text(restored_body, encoding="utf-8")
+            applied_files.append(normalized_rel)
+    except OSError as exc:
+        sys.stderr.write(f"Error writing restored file: {exc}\n")
+        return 1
+
+    if args.as_json:
+        payload = {
+            "target_dir": str(target_root),
+            "vault": str(vault_path),
+            "applied_count": len(applied_files),
+            "applied_files": applied_files,
+        }
+        sys.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(
+            f"Applied {len(applied_files)} file(s) to {target_root}: "
+            f"{', '.join(applied_files)}\n"
         )
 
     return 0
@@ -612,6 +819,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print pack summary as JSON to stdout.",
     )
     pack_parser.set_defaults(handler=_cmd_pack)
+
+    apply_parser = subparsers.add_parser(
+        "apply",
+        help="Restore ### `path` code blocks from an AI Markdown response into a target directory.",
+    )
+    apply_parser.add_argument(
+        "input",
+        nargs="?",
+        default="-",
+        help="Markdown file path or '-' for stdin (default: '-').",
+    )
+    apply_parser.add_argument(
+        "--vault",
+        required=True,
+        help="Path to the existing local pseudonym vault file.",
+    )
+    apply_parser.add_argument(
+        "--target-dir",
+        "-d",
+        default=".",
+        help="Target directory where restored files will be written (default: '.').",
+    )
+    apply_parser.add_argument(
+        "--passphrase",
+        default=None,
+        help="Optional passphrase for decrypting an encrypted vault file.",
+    )
+    apply_parser.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Print apply summary as JSON to stdout.",
+    )
+    apply_parser.set_defaults(handler=_cmd_apply)
 
     proxy_parser = subparsers.add_parser(
         "proxy",

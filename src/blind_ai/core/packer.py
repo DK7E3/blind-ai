@@ -18,6 +18,8 @@ from pathlib import Path
 import re
 from typing import Any, Protocol
 
+from blind_ai.core.config import BlindAIConfig
+from blind_ai.core.contextual import HybridScanner
 from blind_ai.core.file_filter import FileFilter
 from blind_ai.core.scanner import (
     DeterministicScanner,
@@ -35,6 +37,18 @@ TECHNICAL_DIRS: frozenset[str] = frozenset(
         "node_modules",
     }
 )
+
+DEFAULT_LOCKFILE_PATTERNS: tuple[str, ...] = (
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Cargo.lock",
+    "*.min.js",
+    "*.min.css",
+)
+
+DEFAULT_MAX_FILE_BYTES = 1_000_000
 
 _EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".py": "python",
@@ -224,6 +238,19 @@ def _render_file_tree(rel_paths: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def _matches_lockfile_or_minified(rel_posix: str) -> str | None:
+    """Return the matched lockfile/minified pattern for *rel_posix*, or None."""
+    name_lower = Path(rel_posix).name.lower()
+    posix_lower = rel_posix.lower()
+    for pattern in DEFAULT_LOCKFILE_PATTERNS:
+        pat_lower = pattern.lower()
+        if fnmatch.fnmatchcase(name_lower, pat_lower) or fnmatch.fnmatchcase(
+            posix_lower, pat_lower
+        ):
+            return pattern
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class PackResult:
     """Result of packing and sanitizing a repository directory for LLM context."""
@@ -244,22 +271,32 @@ class ContextPacker:
 
     Uses a single :class:`~blind_ai.core.vault.PseudonymVault` across all files
     to guarantee cross-file placeholder consistency for secrets, private IPs,
-    internal paths, and optional proprietary terms.
+    internal paths, custom rules, and optional proprietary terms.
     """
 
     vault: PseudonymVault | None = None
     scanner: ScannerProtocol | None = None
     file_filter: FileFilter | None = None
     proprietary_terms: Sequence[str] = ()
+    config: BlindAIConfig | None = None
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
+    max_tokens: int | None = None
+    case_insensitive_terms: bool = False
 
     def __post_init__(self) -> None:
         if self.scanner is None:
-            self.scanner = DeterministicScanner()
+            self.scanner = HybridScanner()
         if self.vault is None:
             self.vault = PseudonymVault(scanner=self.scanner)  # type: ignore[arg-type]
         if self.file_filter is None:
-            self.file_filter = FileFilter()
-        self.proprietary_terms = self._normalize_terms(self.proprietary_terms)
+            if self.config is not None:
+                self.file_filter = self.config.build_file_filter()
+            else:
+                self.file_filter = FileFilter()
+        merged_terms: list[str] = list(self.proprietary_terms)
+        if self.config is not None and self.config.proprietary_terms:
+            merged_terms.extend(self.config.proprietary_terms)
+        self.proprietary_terms = self._normalize_terms(merged_terms)
 
     @staticmethod
     def _normalize_terms(terms: Sequence[str]) -> tuple[str, ...]:
@@ -267,11 +304,53 @@ class ContextPacker:
         cleaned = {term for term in terms if isinstance(term, str) and term.strip()}
         return tuple(sorted(cleaned, key=lambda t: (-len(t), t)))
 
+    def _find_custom_rule_findings(
+        self,
+        text: str,
+        existing_findings: Sequence[Finding],
+    ) -> list[Finding]:
+        """Build non-overlapping findings from ``config.compiled_custom_rules``."""
+        if not text or self.config is None or not self.config.compiled_custom_rules:
+            return []
+
+        occupied_spans: list[tuple[int, int]] = [
+            (finding.start, finding.end) for finding in existing_findings
+        ]
+        custom_findings: list[Finding] = []
+
+        for rule_name, pattern in self.config.compiled_custom_rules:
+            for match in pattern.finditer(text):
+                start, end = match.span()
+                if start == end:
+                    continue
+                if any(
+                    _spans_overlap(start, end, occ_start, occ_end)
+                    for occ_start, occ_end in occupied_spans
+                ):
+                    continue
+                occupied_spans.append((start, end))
+                custom_findings.append(
+                    Finding(
+                        kind=rule_name,
+                        value=match.group(0),
+                        start=start,
+                        end=end,
+                        line=_line_number(text, start),
+                        source="custom_rule",
+                        confidence=0.95,
+                    )
+                )
+
+        custom_findings.sort(key=lambda f: (f.start, f.end, f.kind))
+        return custom_findings
+
     def _find_proprietary_terms(
         self,
         text: str,
         existing_findings: Sequence[Finding],
         terms: Sequence[str],
+        *,
+        case_insensitive: bool | None = None,
     ) -> list[Finding]:
         """Build non-overlapping ``Finding(kind='proprietary_term', ...)`` entries.
 
@@ -281,13 +360,20 @@ class ContextPacker:
         if not text or not terms:
             return []
 
+        use_case_insensitive = (
+            self.case_insensitive_terms
+            if case_insensitive is None
+            else case_insensitive
+        )
+        regex_flags = re.IGNORECASE if use_case_insensitive else 0
+
         occupied_spans: list[tuple[int, int]] = [
             (finding.start, finding.end) for finding in existing_findings
         ]
         term_findings: list[Finding] = []
 
         for term in terms:
-            pattern = re.compile(re.escape(term))
+            pattern = re.compile(re.escape(term), regex_flags)
             for match in pattern.finditer(text):
                 start, end = match.span()
                 if any(
@@ -311,15 +397,34 @@ class ContextPacker:
         term_findings.sort(key=lambda f: (f.start, f.end, f.kind))
         return term_findings
 
-    def _sanitize_content(self, text: str, terms: Sequence[str]) -> str:
-        """Scan *text* with scanner + proprietary terms and sanitize via shared vault."""
+    def _sanitize_content(
+        self,
+        text: str,
+        terms: Sequence[str],
+        *,
+        case_insensitive: bool | None = None,
+    ) -> str:
+        """Scan *text* with scanner + config rules + proprietary terms and sanitize via shared vault."""
         assert self.scanner is not None
         assert self.vault is not None
 
-        scanner_findings = self.scanner.scan_text(text)
-        term_findings = self._find_proprietary_terms(text, scanner_findings, terms)
+        scanner_findings = list(self.scanner.scan_text(text))
+        custom_findings = self._find_custom_rule_findings(text, scanner_findings)
+        base_findings = [*scanner_findings, *custom_findings]
+        if self.config is not None:
+            base_findings = self.config.filter_findings(base_findings)
+
+        term_findings = self._find_proprietary_terms(
+            text,
+            base_findings,
+            terms,
+            case_insensitive=case_insensitive,
+        )
+        if self.config is not None:
+            term_findings = self.config.filter_findings(term_findings)
+
         combined = sorted(
-            [*scanner_findings, *term_findings],
+            [*base_findings, *term_findings],
             key=lambda f: (f.start, f.end, f.kind),
         )
         return self.vault.sanitize(text, findings=combined)
@@ -329,6 +434,9 @@ class ContextPacker:
         root_dir: str | Path,
         *,
         proprietary_terms: Sequence[str] | None = None,
+        max_file_bytes: int | None = None,
+        max_tokens: int | None = None,
+        case_insensitive_terms: bool | None = None,
     ) -> PackResult:
         """Scan *root_dir* and return a sanitized :class:`PackResult`."""
         assert self.vault is not None
@@ -344,6 +452,17 @@ class ContextPacker:
             self.proprietary_terms
             if proprietary_terms is None
             else self._normalize_terms(proprietary_terms)
+        )
+        effective_max_bytes = (
+            self.max_file_bytes if max_file_bytes is None else max_file_bytes
+        )
+        effective_max_tokens = (
+            self.max_tokens if max_tokens is None else max_tokens
+        )
+        effective_case_insensitive = (
+            self.case_insensitive_terms
+            if case_insensitive_terms is None
+            else case_insensitive_terms
         )
         gitignore_rules = _parse_gitignore(root / ".gitignore")
 
@@ -378,11 +497,35 @@ class ContextPacker:
                 if _is_gitignored(rel_posix, gitignore_rules, is_dir=False):
                     continue
 
+                lock_pattern = _matches_lockfile_or_minified(rel_posix)
+                if lock_pattern is not None:
+                    blocked_files.append(rel_posix)
+                    blocked_reasons[rel_posix] = (
+                        f"Blocked lockfile/minified pattern '{lock_pattern}'"
+                    )
+                    continue
+
                 decision = self.file_filter.check_path(file_path)
                 if not decision.allowed:
                     blocked_files.append(rel_posix)
                     blocked_reasons[rel_posix] = decision.reason
                     continue
+
+                if effective_max_bytes is not None and effective_max_bytes > 0:
+                    try:
+                        file_size = file_path.stat().st_size
+                    except OSError as exc:
+                        blocked_files.append(rel_posix)
+                        blocked_reasons[rel_posix] = (
+                            f"Blocked: unable to stat file ({exc})"
+                        )
+                        continue
+                    if file_size > effective_max_bytes:
+                        blocked_files.append(rel_posix)
+                        blocked_reasons[rel_posix] = (
+                            f"Blocked: file size {file_size} bytes exceeds max_file_bytes ({effective_max_bytes})"
+                        )
+                        continue
 
                 try:
                     raw_content = file_path.read_text(encoding="utf-8")
@@ -391,7 +534,24 @@ class ContextPacker:
                     blocked_reasons[rel_posix] = f"Blocked: non-UTF-8 or unreadable file ({exc})"
                     continue
 
-                sanitized_content = self._sanitize_content(raw_content, active_terms)
+                sanitized_content = self._sanitize_content(
+                    raw_content,
+                    active_terms,
+                    case_insensitive=effective_case_insensitive,
+                )
+
+                if effective_max_tokens is not None:
+                    candidate_files = [*included_files, rel_posix]
+                    candidate_entries = [*sanitized_entries, (rel_posix, sanitized_content)]
+                    candidate_bundle = self._format_bundle(candidate_files, candidate_entries)
+                    candidate_tokens = len(candidate_bundle) // 4
+                    if candidate_tokens > effective_max_tokens:
+                        blocked_files.append(rel_posix)
+                        blocked_reasons[rel_posix] = (
+                            f"Blocked: adding file would exceed max_tokens ({candidate_tokens} > {effective_max_tokens})"
+                        )
+                        continue
+
                 included_files.append(rel_posix)
                 sanitized_entries.append((rel_posix, sanitized_content))
 

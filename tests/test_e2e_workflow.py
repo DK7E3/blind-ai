@@ -24,21 +24,29 @@ _PLACEHOLDER_RE = re.compile(r"__BLIND_[A-Z0-9_]+__")
 class TestE2EWorkflow(unittest.TestCase):
     """Validate the full CLI workflow from repository packing to executable restoration."""
 
-    def _cli_env(self) -> dict[str, str]:
+    def _cli_env(
+        self, extra_env: dict[str, str] | None = None
+    ) -> dict[str, str]:
         env = os.environ.copy()
         existing = env.get("PYTHONPATH")
         env["PYTHONPATH"] = (
             f"{SRC_DIR}{os.pathsep}{existing}" if existing else str(SRC_DIR)
         )
+        if extra_env:
+            env.update(extra_env)
         return env
 
-    def _run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def _run_cli(
+        self,
+        *args: str,
+        extra_env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, "-m", "blind_ai", *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
-            env=self._cli_env(),
+            env=self._cli_env(extra_env),
             check=False,
         )
 
@@ -255,6 +263,65 @@ class TestE2EWorkflow(unittest.TestCase):
                     "aws_key": api_key,
                     "db_host": private_ip,
                     "dsn": f"https://{private_ip}/api/{proprietary_term}",
+                    "project": proprietary_term,
+                },
+            )
+
+            # 11. Run `python -m blind_ai apply` using BLIND_AI_PASSPHRASE env var
+            ai_markdown_reply = root / "ai_markdown_reply.md"
+            ai_markdown_reply.write_text(
+                "\n".join(
+                    [
+                        "Updated repository files:",
+                        "",
+                        "### `app/runtime_check.py`",
+                        "",
+                        "```python",
+                        "import json",
+                        f'PAYLOAD = {{"aws_key": "{aws_ph}", "db_host": "{ip_ph}", "project": "{term_ph}"}}',
+                        'if __name__ == "__main__":',
+                        "    print(json.dumps(PAYLOAD, sort_keys=True))",
+                        "```",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            apply_target_dir = root / "applied_workspace"
+            apply_proc = self._run_cli(
+                "apply",
+                str(ai_markdown_reply),
+                "--vault",
+                str(vault_path),
+                "--target-dir",
+                str(apply_target_dir),
+                "--json",
+                extra_env={"BLIND_AI_PASSPHRASE": passphrase},
+            )
+            self.assertEqual(
+                apply_proc.returncode,
+                0,
+                msg=f"apply failed:\nSTDOUT:\n{apply_proc.stdout}\nSTDERR:\n{apply_proc.stderr}",
+            )
+            apply_summary = json.loads(apply_proc.stdout)
+            self.assertEqual(apply_summary["applied_count"], 1)
+            self.assertEqual(apply_summary["applied_files"], ["app/runtime_check.py"])
+
+            applied_script = apply_target_dir / "app" / "runtime_check.py"
+            self.assertTrue(applied_script.is_file())
+            applied_proc = subprocess.run(
+                [sys.executable, str(applied_script)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(applied_proc.returncode, 0, msg=applied_proc.stderr)
+            self.assertEqual(
+                json.loads(applied_proc.stdout),
+                {
+                    "aws_key": api_key,
+                    "db_host": private_ip,
                     "project": proprietary_term,
                 },
             )

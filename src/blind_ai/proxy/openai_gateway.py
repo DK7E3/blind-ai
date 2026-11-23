@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from http import HTTPStatus
 import json
+import os
 import re
 import time
 from typing import Any, Protocol
@@ -254,6 +255,30 @@ def sanitize_chat_request(
                 f"Message at index {idx} 'content' must be a string, list, or null.",
             )
 
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            sanitized_tool_calls: list[Any] = []
+            for tc in tool_calls:
+                if not isinstance(tc, Mapping):
+                    sanitized_tool_calls.append(tc)
+                    continue
+                tc_copy = dict(tc)
+                fn = tc_copy.get("function")
+                if isinstance(fn, Mapping):
+                    fn_copy = dict(fn)
+                    args = fn_copy.get("arguments")
+                    if isinstance(args, str):
+                        resolved_session_id, sanitized_args = session_store.sanitize(
+                            args,
+                            session_id=resolved_session_id,
+                        )
+                        fn_copy["arguments"] = sanitized_args
+                        if not last_any_content:
+                            last_any_content = sanitized_args
+                    tc_copy["function"] = fn_copy
+                sanitized_tool_calls.append(tc_copy)
+            msg_copy["tool_calls"] = sanitized_tool_calls
+
         sanitized_messages.append(msg_copy)
 
     if resolved_session_id is None:
@@ -301,6 +326,26 @@ def _restore_json_response(
                         session_id,
                         msg_copy["content"],
                     )
+                tool_calls = msg_copy.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    restored_tool_calls: list[Any] = []
+                    for tc in tool_calls:
+                        if not isinstance(tc, Mapping):
+                            restored_tool_calls.append(tc)
+                            continue
+                        tc_copy = dict(tc)
+                        fn = tc_copy.get("function")
+                        if isinstance(fn, Mapping):
+                            fn_copy = dict(fn)
+                            if isinstance(fn_copy.get("arguments"), str):
+                                fn_copy["arguments"] = _restore_for_session(
+                                    session_store,
+                                    session_id,
+                                    fn_copy["arguments"],
+                                )
+                            tc_copy["function"] = fn_copy
+                        restored_tool_calls.append(tc_copy)
+                    msg_copy["tool_calls"] = restored_tool_calls
                 choice_copy["message"] = msg_copy
             if isinstance(choice_copy.get("text"), str):
                 choice_copy["text"] = _restore_for_session(
@@ -415,23 +460,37 @@ def _iter_local_echo_sse(
     yield b"data: [DONE]\n\n"
 
 
+def _resolve_upstream_api_key(upstream_api_key: str | None) -> str | None:
+    if upstream_api_key is not None and upstream_api_key.strip():
+        return upstream_api_key.strip()
+    env_key = os.environ.get("BLIND_AI_UPSTREAM_API_KEY")
+    if env_key is not None and env_key.strip():
+        return env_key.strip()
+    return None
+
+
 def _forward_json_upstream(
     upstream_url: str,
     outbound_payload: Mapping[str, Any],
     session_store: SessionStoreProtocol,
     session_id: str,
     *,
+    upstream_api_key: str | None = None,
     timeout: float = _DEFAULT_UPSTREAM_TIMEOUT,
 ) -> dict[str, Any]:
     endpoint = resolve_upstream_endpoint(upstream_url)
     body_bytes = json.dumps(outbound_payload, ensure_ascii=False).encode("utf-8")
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    resolved_key = _resolve_upstream_api_key(upstream_api_key)
+    if resolved_key:
+        headers["Authorization"] = f"Bearer {resolved_key}"
     req = urllib_request.Request(
         endpoint,
         data=body_bytes,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -471,17 +530,22 @@ def _iter_upstream_sse(
     session_store: SessionStoreProtocol,
     session_id: str,
     *,
+    upstream_api_key: str | None = None,
     timeout: float = _DEFAULT_UPSTREAM_TIMEOUT,
 ) -> Iterator[bytes]:
     endpoint = resolve_upstream_endpoint(upstream_url)
     body_bytes = json.dumps(outbound_payload, ensure_ascii=False).encode("utf-8")
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    resolved_key = _resolve_upstream_api_key(upstream_api_key)
+    if resolved_key:
+        headers["Authorization"] = f"Bearer {resolved_key}"
     req = urllib_request.Request(
         endpoint,
         data=body_bytes,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -499,6 +563,7 @@ def _iter_upstream_sse(
 
     def _stream() -> Iterator[bytes]:
         restorers: dict[int, StreamRestorer] = {}
+        tool_restorers: dict[tuple[int, int], StreamRestorer] = {}
         last_meta: dict[str, Any] = {
             "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion.chunk",
@@ -515,8 +580,18 @@ def _iter_upstream_sse(
                 restorers[choice_idx] = restorer
             return restorer
 
-        def _flush_events() -> Iterator[bytes]:
-            for choice_idx in sorted(restorers.keys()):
+        def _get_tool_restorer(choice_idx: int, tc_idx: int) -> StreamRestorer:
+            key = (choice_idx, tc_idx)
+            restorer = tool_restorers.get(key)
+            if restorer is None:
+                restorer = StreamRestorer(
+                    lambda text: _restore_for_session(session_store, session_id, text)
+                )
+                tool_restorers[key] = restorer
+            return restorer
+
+        def _flush_choice_events(choice_idx: int) -> Iterator[bytes]:
+            if choice_idx in restorers:
                 flushed = restorers[choice_idx].flush()
                 if flushed:
                     event = {
@@ -530,6 +605,37 @@ def _iter_upstream_sse(
                         ],
                     }
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+
+            tc_keys = sorted(k for k in tool_restorers if k[0] == choice_idx)
+            flushed_tcs: list[dict[str, Any]] = []
+            for _, tc_idx in tc_keys:
+                flushed_arg = tool_restorers[(choice_idx, tc_idx)].flush()
+                if flushed_arg:
+                    flushed_tcs.append(
+                        {
+                            "index": tc_idx,
+                            "function": {"arguments": flushed_arg},
+                        }
+                    )
+            if flushed_tcs:
+                event = {
+                    **last_meta,
+                    "choices": [
+                        {
+                            "index": choice_idx,
+                            "delta": {"tool_calls": flushed_tcs},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        def _flush_events() -> Iterator[bytes]:
+            all_choices = sorted(
+                set(restorers.keys()) | {choice_idx for choice_idx, _ in tool_restorers}
+            )
+            for choice_idx in all_choices:
+                yield from _flush_choice_events(choice_idx)
 
         done_emitted = False
         try:
@@ -567,27 +673,24 @@ def _iter_upstream_sse(
                             continue
                         choice_idx = int(choice.get("index", 0))
                         delta = choice.get("delta")
-                        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                            restorer = _get_restorer(choice_idx)
-                            delta["content"] = restorer.feed(delta["content"])
-                        if choice.get("finish_reason") is not None and choice_idx in restorers:
-                            flushed = restorers[choice_idx].flush()
-                            if flushed:
-                                flush_event = {
-                                    **last_meta,
-                                    "choices": [
-                                        {
-                                            "index": choice_idx,
-                                            "delta": {"content": flushed},
-                                            "finish_reason": None,
-                                        }
-                                    ],
-                                }
-                                pre_flush_events.append(
-                                    f"data: {json.dumps(flush_event, ensure_ascii=False)}\n\n".encode(
-                                        "utf-8"
-                                    )
-                                )
+                        if isinstance(delta, dict):
+                            if isinstance(delta.get("content"), str):
+                                restorer = _get_restorer(choice_idx)
+                                delta["content"] = restorer.feed(delta["content"])
+                            tool_calls = delta.get("tool_calls")
+                            if isinstance(tool_calls, list):
+                                for pos_idx, tc in enumerate(tool_calls):
+                                    if not isinstance(tc, dict):
+                                        continue
+                                    tc_idx = int(tc.get("index", pos_idx))
+                                    fn = tc.get("function")
+                                    if isinstance(fn, dict) and isinstance(
+                                        fn.get("arguments"), str
+                                    ):
+                                        tc_restorer = _get_tool_restorer(choice_idx, tc_idx)
+                                        fn["arguments"] = tc_restorer.feed(fn["arguments"])
+                        if choice.get("finish_reason") is not None:
+                            pre_flush_events.extend(_flush_choice_events(choice_idx))
 
                 for pre_event in pre_flush_events:
                     yield pre_event
@@ -608,6 +711,7 @@ def handle_chat_completions(
     *,
     session_id: str | None = None,
     upstream_url: str | None = None,
+    upstream_api_key: str | None = None,
     timeout: float = _DEFAULT_UPSTREAM_TIMEOUT,
 ) -> tuple[str, bool, dict[str, Any] | Iterator[bytes]]:
     """Process a ``POST /v1/chat/completions`` request.
@@ -631,6 +735,7 @@ def handle_chat_completions(
                 outbound,
                 session_store,
                 resolved_session_id,
+                upstream_api_key=upstream_api_key,
                 timeout=timeout,
             )
         else:
@@ -648,6 +753,7 @@ def handle_chat_completions(
             outbound,
             session_store,
             resolved_session_id,
+            upstream_api_key=upstream_api_key,
             timeout=timeout,
         )
     else:

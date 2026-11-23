@@ -15,6 +15,7 @@ import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import sys
 import threading
 import time
@@ -140,6 +141,7 @@ class BlindAIProxyServer(ThreadingHTTPServer):
         session_store: SessionStore | None = None,
         quiet: bool = False,
         upstream_url: str | None = None,
+        upstream_api_key: str | None = None,
         auth_token: str | None = None,
         max_body_bytes: int = MAX_BODY_BYTES,
     ) -> None:
@@ -152,6 +154,7 @@ class BlindAIProxyServer(ThreadingHTTPServer):
         self.session_store = session_store or SessionStore()
         self.quiet = quiet
         self.upstream_url = upstream_url
+        self.upstream_api_key = upstream_api_key
         self.auth_token = auth_token
         self.max_body_bytes = max_body_bytes
         super().__init__(server_address, BlindAIRequestHandler)
@@ -332,6 +335,7 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
                 self.server.session_store,
                 session_id=session_id,
                 upstream_url=self.server.upstream_url,
+                upstream_api_key=self.server.upstream_api_key,
             )
         except GatewayError as exc:
             self._send_json(exc.status, {"error": exc.message})
@@ -453,6 +457,7 @@ def create_server(
     scanner_factory: Callable[[], Any] = HybridScanner,
     quiet: bool = False,
     upstream_url: str | None = None,
+    upstream_api_key: str | None = None,
     auth_token: str | None = None,
     max_body_bytes: int = MAX_BODY_BYTES,
     session_ttl: float | None = None,
@@ -464,11 +469,17 @@ def create_server(
         ttl_seconds=session_ttl,
         clock=clock,
     )
+    resolved_upstream_key = (
+        upstream_api_key
+        if upstream_api_key is not None
+        else os.environ.get("BLIND_AI_UPSTREAM_API_KEY")
+    )
     return BlindAIProxyServer(
         (host, port),
         session_store=store,
         quiet=quiet,
         upstream_url=upstream_url,
+        upstream_api_key=resolved_upstream_key,
         auth_token=auth_token,
         max_body_bytes=max_body_bytes,
     )
@@ -502,6 +513,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional local OpenAI-compatible upstream base or endpoint URL.",
     )
     parser.add_argument(
+        "--upstream-api-key",
+        default=os.environ.get("BLIND_AI_UPSTREAM_API_KEY"),
+        help="Optional upstream API key sent as Authorization: Bearer (or BLIND_AI_UPSTREAM_API_KEY).",
+    )
+    parser.add_argument(
         "--auth-token",
         default=None,
         help="Optional Bearer token required on all /v1/* endpoints.",
@@ -529,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         quiet=args.quiet,
         upstream_url=args.upstream_url,
+        upstream_api_key=args.upstream_api_key,
         auth_token=args.auth_token,
         max_body_bytes=args.max_body_bytes,
         session_ttl=args.session_ttl,

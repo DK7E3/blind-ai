@@ -274,6 +274,98 @@
       "unit_test_command": ["{python}", "-m", "unittest", "tests/test_e2e_workflow.py", "-v"],
       "runtime_mode": "unit_only",
       "probes": []
+    },
+    "scanner_v2_precision_and_recall": {
+      "domain": "core",
+      "description": "Fase 7A: Expansão de detectores em scanner.py (credenciais em URLs postgres/https://user:pass@host, blocos PEM PRIVATE KEY inline, Stripe sk_live/rk_live, Slack xoxb/xoxp, Google AIza, Anthropic sk-ant, Bearer tokens) e redução de falsos positivos de high_entropy_token em código Python real (rejeitar CamelCase sem dígitos fora de contexto sensível, ignorar regex/MIME types).",
+      "files": [
+        "src/blind_ai/core/scanner.py",
+        "tests/test_scanner.py"
+      ],
+      "invariants": [
+        "Detecta credenciais em URLs (ex: postgres://admin:SuperS3cret!@db.internal:5432/prod e https://user:p4ssw0rd@host/api) mesmo sendo URLs.",
+        "Detecta blocos PEM inline (-----BEGIN ... PRIVATE KEY-----), chaves Stripe (sk_live_..., rk_live_...), Slack (xox[baprs]-...), Google API (AIza...), Anthropic (sk-ant-...) e Authorization Bearer tokens.",
+        "Quando sensitive_context=False em _is_high_entropy_token, exige pelo menos 1 dígito (não marca identificadores CamelCase puros como 'SimpleHTTPRequestHandler') e ignora strings que parecem regex ou MIME content-type.",
+        "Mantém 100% dos testes existentes passando (test_scanner.py, test_experiment.py, test_adversarial_benchmark.py)."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_scanner.py", "tests/test_experiment.py", "tests/test_adversarial_benchmark.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "packer_hybrid_and_limits": {
+      "domain": "core",
+      "description": "Fase 7B: Atualizar ContextPacker para usar HybridScanner por padrão, integrar BlindAIConfig (custom_rules + allowlist), ignorar lockfiles/minified (package-lock.json, yarn.lock, poetry.lock, *.min.js, *.min.css), impor max_file_bytes (padrão 1MB) e suportar matching case-insensitive opcional e max_tokens.",
+      "files": [
+        "src/blind_ai/core/packer.py",
+        "tests/test_packer.py"
+      ],
+      "invariants": [
+        "ContextPacker usa HybridScanner() por padrão quando scanner=None, detectando também vazamentos contextuais em comentários.",
+        "Aceita config: BlindAIConfig | None = None (aplicando custom_rules e filter_findings da allowlist), max_file_bytes: int = 1_000_000 e max_tokens: int | None = None.",
+        "Bloqueia/pula automaticamente lockfiles comuns (package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock, Cargo.lock) e arquivos > max_file_bytes registrando em blocked_files/blocked_reasons.",
+        "Mantém 100% de compatibilidade com tests/test_packer.py e tests/test_cli_v1.py."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_packer.py", "tests/test_cli_v1.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "proxy_upstream_auth_and_tool_calls": {
+      "domain": "proxy",
+      "description": "Fase 7C: Suporte a upstream_api_key (--upstream-api-key ou env BLIND_AI_UPSTREAM_API_KEY) repassado como Authorization: Bearer ao upstream, além de sanitização e restauração de tool_calls (function.arguments em request, response JSON e streaming SSE delta.tool_calls).",
+      "files": [
+        "src/blind_ai/proxy/openai_gateway.py",
+        "src/blind_ai/proxy/server.py",
+        "tests/test_openai_gateway.py"
+      ],
+      "invariants": [
+        "Quando upstream_api_key é fornecido (ou via BLIND_AI_UPSTREAM_API_KEY), _forward_json_upstream e _iter_upstream_sse enviam header Authorization: Bearer <upstream_api_key> ao servidor upstream.",
+        "sanitize_chat_request sanitiza tool_calls[*].function.arguments (quando string) nas mensagens de entrada.",
+        "_restore_json_response e _iter_upstream_sse restauram placeholders em choices[*].message.tool_calls[*].function.arguments e delta.tool_calls[*].function.arguments.",
+        "Mantém 100% dos testes existentes em tests/test_openai_gateway.py e tests/test_proxy.py passando."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_openai_gateway.py", "tests/test_proxy.py", "-v"],
+      "runtime_mode": "http_server",
+      "probes": [
+        {
+          "name": "proxy_healthcheck",
+          "method": "GET",
+          "path": "/health",
+          "expected_status": 200,
+          "expected_json_subset": { "status": "ok" }
+        },
+        {
+          "name": "proxy_tool_calls_live",
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "payload": {
+            "model": "local-echo",
+            "messages": [
+              { "role": "user", "content": "url postgres://admin:SuperS3cret!@db.internal:5432/prod" }
+            ]
+          },
+          "expected_status": 200,
+          "expected_body_contains": "choices"
+        }
+      ]
+    },
+    "cli_apply_staged_git_and_env_passphrase": {
+      "domain": "cli",
+      "description": "Fase 7D: Subcomando `blind-ai apply` (restaura blocos ### `path` de uma resposta Markdown da IA e grava os arquivos no diretório alvo), leitura real do índice Git (`git show :<path>`) em `scan --staged`, suporte a `BLIND_AI_PASSPHRASE` e uso de `HybridScanner` + `cfg` na CLI.",
+      "files": [
+        "src/blind_ai/cli/main.py",
+        "tests/test_cli_v1.py",
+        "tests/test_e2e_workflow.py"
+      ],
+      "invariants": [
+        "Subcomando `blind-ai apply <input> --vault <vault> [--target-dir <dir>] [--passphrase ...] [--json]` extrai blocos `### \\`rel/path\\`` seguidos de código fenced, restaura placeholders via cofre, bloqueia path traversal (`..` ou caminhos absolutos) e grava os arquivos restaurados em `--target-dir` (padrão `.`).",
+        "Em `scan --staged`, lê o conteúdo staged via `git show :<posix_path>` (com fallback para leitura do disco caso o comando git show falhe fora de um commit/índice padrão).",
+        "Quando `--passphrase` não é informado mas a variável de ambiente `BLIND_AI_PASSPHRASE` está definida (não vazia), `pack`, `sanitize`, `restore` e `apply` usam `BLIND_AI_PASSPHRASE`.",
+        "`scan`, `sanitize` e `pack` usam `HybridScanner()` e passam `config=cfg` para `ContextPacker`, mantendo 100% dos testes existentes (`test_cli.py`, `test_cli_v1.py`, `test_e2e_workflow.py`) aprovados."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_cli.py", "tests/test_cli_v1.py", "tests/test_e2e_workflow.py", "-v"],
+      "runtime_mode": "cli_command",
+      "cli_probe_command": ["{python}", "-m", "blind_ai", "pack", "src", "--json"],
+      "probes": []
     }
   }
 }

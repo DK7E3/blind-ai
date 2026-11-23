@@ -70,3 +70,23 @@
 - **Nota do PM:** Aprovado para o domínio 'benchmark' (feature 'e2e_safe_context_validation'): EvidenceBundle reportou passed=true com gate_1_hard_constraints (ok=true, 1ms) e gate_2_unit_tests (ok=true, 2862ms) aprovados ("TODOS OS GATES APROVADOS.").
 - **Evidência:** `{"passed": true, "results": [{"feature": "e2e_safe_context_validation", "domain": "benchmark", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 1, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 2862, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
 
+## [2026-11-22 22:21:02] T15 — `scanner_v2_precision_and_recall` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(7ms), gate_2_unit_tests=ok(277ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "scanner_v2_precision_and_recall", "domain": "core", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 7, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 277, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 22:24:24] T16 — `packer_hybrid_and_limits` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(11ms), gate_2_unit_tests=ok(4308ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "packer_hybrid_and_limits", "domain": "core", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 11, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 4308, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 22:27:29] T17 — `proxy_upstream_auth_and_tool_calls` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(27ms), gate_2_unit_tests=ok(5252ms), gate_3_http_runtime=ok(571ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "proxy_upstream_auth_and_tool_calls", "domain": "proxy", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 27, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 5252, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_http_runtime", "ok": true, "ms": 571, "summary": "2/2 probe(s) validados ao vivo no Proxy HTTP."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 22:32:02] T18 — `cli_apply_staged_git_and_env_passphrase` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(32ms), gate_2_unit_tests=ok(12139ms), gate_3_cli_runtime=ok(713ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "cli_apply_staged_git_and_env_passphrase", "domain": "cli", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 32, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 12139, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_cli_runtime", "ok": true, "ms": 713, "summary": "CLI real executada com sucesso."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
