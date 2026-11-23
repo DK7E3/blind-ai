@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blind-ai"
+version = "0.1.0"
+description = "Local deterministic secret scanner, pseudonymization vault, and security proxy for AI workflows."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+blind-ai = "blind_ai.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

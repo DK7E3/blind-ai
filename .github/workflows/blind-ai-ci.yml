@@ -1,0 +1,27 @@
+name: Blind AI (VERITAS) — CI & Runtime Verification
+
+on:
+  push:
+    branches: [main, "veritas/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  veritas-full-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Full Regression Suite (unittest)
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -v
+
+      - name: VERITAS All-Features Runtime Verifier (Gates 1, 2 & 3 — CLI + Live HTTP Proxy)
+        run: python .agents/skills/veritas-orchestrator/scripts/verify_runtime.py --all

@@ -1,25 +1,13 @@
-# Ambientes virtuais Python
-.venv/
-venv/
-env/
-
-# Cache e arquivos compilados Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+.venv/
+venv/
+*.egg-info/
 .pytest_cache/
 
-# Segurança: NUNCA versionar segredos ou chaves reais
-.env
-.env.*
-*.pem
-*.key
-*.p12
-
-# Logs e arquivos temporários
-*.log
+# SO / IDE
 .DS_Store
 Thumbs.db
-
-# Artefatos locais do cofre (Vault) de execução
-.blind-ai/
+.vscode/

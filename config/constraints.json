@@ -1,0 +1,25 @@
+{
+  "max_file_bytes": 100000,
+  "banned_patterns": [
+    {
+      "id": "NO_EVAL",
+      "pattern": "\\beval\\s*\\(",
+      "message": "Uso de eval() é proibido por segurança e determinismo."
+    },
+    {
+      "id": "NO_EXEC",
+      "pattern": "\\bexec\\s*\\(",
+      "message": "Uso de exec() é proibido por segurança e determinismo."
+    },
+    {
+      "id": "NO_BARE_EXCEPT",
+      "pattern": "^\\s*except\\s*:\\s*$",
+      "message": "Evite 'except:' genérico; capture exceções específicas."
+    },
+    {
+      "id": "NO_EXTERNAL_NETWORK_IN_CORE",
+      "pattern": "\\b(requests\\.(get|post)|urllib\\.request\\.urlopen)\\s*\\(\\s*['\"]https?://(?!127\\.0\\.0\\.1|localhost)",
+      "message": "O núcleo local do blind-ai não deve enviar dados para hosts externos reais."
+    }
+  ]
+}
