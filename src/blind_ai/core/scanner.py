@@ -106,7 +106,7 @@ _REGEX_RULES: tuple[tuple[str, re.Pattern[str], float], ...] = (
     ),
 )
 
-_IPV4_RE = re.compile(r"(?<![0-9.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9.])")
+_IPV4_RE = re.compile(r"(?<![0-9.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9]|\.\d)")
 
 _UNIX_INTERNAL_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_./:-])"

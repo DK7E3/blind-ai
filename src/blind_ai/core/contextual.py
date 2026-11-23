@@ -27,9 +27,9 @@ _PROTOCOL_RE = re.compile(r"^[A-Z]{2,8}/?\d+(?:\.\d+)?$")
 # Strong credential/secret context cues (matched as whole words, case-insensitive).
 _STRONG_CUE_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
-    r"passwords?|passwds?|passphrases?|pwd|"
-    r"secrets?|tokens?|apikeys?|api[_ -]?keys?|"
-    r"webhooks?|credentials?|creds?|"
+    r"passwords?|passwds?|passphrases?|pwd|senhas?|"
+    r"secrets?|segredos?|tokens?|apikeys?|api[_ -]?keys?|chaves?|"
+    r"webhooks?|credentials?|creds?|credenciais?|"
     r"vault|override|bearer|private[_ -]?keys?|signing"
     r")(?![A-Za-z0-9_])",
     re.IGNORECASE,
@@ -67,7 +67,7 @@ _LINE_COMMENT_RE = re.compile(r"(?:(?<!\w)#.*$|(?<![:/])//.*$)")
 # Linking words/separators used when scanning non-comment free text.
 _FREE_TEXT_ASSIGN_RE = re.compile(
     r"(?:"
-    r"(?<![A-Za-z0-9_])(?:passwords?|passwds?|passphrases?|pwd|secrets?|tokens?|webhooks?|credentials?|api[_ -]?keys?)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])(?:passwords?|passwds?|passphrases?|pwd|senhas?|secrets?|segredos?|tokens?|webhooks?|credentials?|credenciais?|api[_ -]?keys?)(?![A-Za-z0-9_])"
     r"\s*(?:[:=]|->|=>|\bis\b|\bare\b|\buse\b)\s*"
     r")",
     re.IGNORECASE,
