@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from blind_ai.core.config import BlindAIConfig
 from blind_ai.core.contextual import HybridScanner
@@ -390,6 +391,63 @@ class ContextPackerTests(unittest.TestCase):
             restored = result.vault.restore(result.bundle)
             self.assertIn("projectorion", restored)
             self.assertIn("PROJECTORION", restored)
+
+    def test_blocks_symlinks_and_outside_root_and_computes_max_tokens_incrementally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "repo"
+            root.mkdir()
+            outside = base / "outside_secret.txt"
+            outside.write_text("OUTSIDE_SECRET = 1\n", encoding="utf-8")
+
+            self._write_file(root, "a_first.py", "x = 1\n")
+            self._write_file(root, "b_second.py", "y = 2\n")
+            self._write_file(root, "c_third.py", "z = '" + ("C" * 800) + "'\n")
+            self._write_file(root, ".agents/hook.py", "malicious = True\n")
+            self._write_file(root, ".github/workflows/ci.yml", "name: ci\n")
+
+            symlink_file = root / "linked_secret.py"
+            symlink_created = False
+            try:
+                symlink_file.symlink_to(outside)
+                symlink_created = True
+            except (OSError, NotImplementedError):
+                symlink_created = False
+
+            packer = ContextPacker(max_tokens=100)
+            with mock.patch.object(
+                ContextPacker,
+                "_format_bundle",
+                wraps=ContextPacker._format_bundle,
+            ) as mocked_format:
+                result = packer.pack(root)
+                # _format_bundle must only be called once at the end (O(N)), not per file
+                self.assertEqual(mocked_format.call_count, 1)
+
+            self.assertIn("a_first.py", result.included_files)
+            self.assertIn("b_second.py", result.included_files)
+            self.assertIn("c_third.py", result.blocked_files)
+            self.assertNotIn(".agents/hook.py", result.included_files)
+            self.assertNotIn(".github/workflows/ci.yml", result.included_files)
+            self.assertNotIn("OUTSIDE_SECRET", result.bundle)
+
+            if symlink_created:
+                self.assertIn("linked_secret.py", result.blocked_files)
+                self.assertIn("symbolic link", result.blocked_reasons["linked_secret.py"])
+
+            # Also verify mocked symlink blocking when OS privileges disallow real symlinks
+            if not symlink_created:
+                orig_is_symlink = Path.is_symlink
+
+                def fake_is_symlink(p: Path) -> bool:
+                    if p.name == "b_second.py":
+                        return True
+                    return orig_is_symlink(p)
+
+                with mock.patch.object(Path, "is_symlink", fake_is_symlink):
+                    res2 = ContextPacker().pack(root)
+                self.assertIn("b_second.py", res2.blocked_files)
+                self.assertIn("symbolic link", res2.blocked_reasons["b_second.py"])
 
 
 if __name__ == "__main__":

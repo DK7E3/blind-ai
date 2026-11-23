@@ -366,6 +366,84 @@
       "runtime_mode": "cli_command",
       "cli_probe_command": ["{python}", "-m", "blind_ai", "pack", "src", "--json"],
       "probes": []
+    },
+    "scanner_v3_multilang_and_zero_stdlib_fp": {
+      "domain": "core",
+      "description": "Fase 8A: Detecção de atribuições sensíveis multi-linguagem (ex: const MASTER_KEY = '...', CLIENT_SECRET: '...') em JS/TS/Go/Rust/YAML, correção de fronteira de underscore em ContextualDetector e eliminação dos falsos positivos restantes na stdlib do Python (ignorar loopback 127.0.0.0/8 e 0.0.0.0/8 em private_ip, aceitar ;charset=... em MIME types, ignorar tabelas sequenciais de alfabeto/hex como 0123456789ABCDEFabcdef e ignorar expressões com [, ], = ou sufixo _XXX em comentários).",
+      "files": [
+        "src/blind_ai/core/scanner.py",
+        "src/blind_ai/core/contextual.py",
+        "tests/test_scanner.py",
+        "tests/test_experiment.py"
+      ],
+      "invariants": [
+        "Detecta atribuições sensíveis em arquivos não-Python que falham em ast.parse() (ex: `const MASTER_KEY = \"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6\";` em JS/TS).",
+        "Em private_ip, ignora loopback (127.0.0.0/8, ip_obj.is_loopback), unspecified (0.0.0.0) e qualquer IPv4 cujo primeiro octeto seja '0' (ex: strings de versão '0.5.1.2'), mantendo detecção de RFC 1918 (10.x, 172.16-31.x, 192.168.x).",
+        "Em _MIME_TYPE_RE aceita parâmetros opcionais como ';charset=utf-8' (ex: 'text/html;charset=utf-8'), e _is_high_entropy_token ignora tabelas sequenciais de alfabeto/hex (como '0123456789ABCDEFabcdef').",
+        "Em ContextualDetector._score_secret_candidate, rejeita tokens com colchetes '[' ou ']', sinal '=' (ex: 'token[0][:0', 'self._userinfo[1', 'secure=None') ou terminados em '_XXX' (ex: 'parse_XXX').",
+        "Mantém 100% dos testes existentes passando (test_scanner.py, test_experiment.py, test_adversarial_benchmark.py) e NUNCA escreve literais diretos de sk_live_, rk_live_ ou xoxb- nos testes (usar join para compatibilidade com GitHub Push Protection)."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_scanner.py", "tests/test_experiment.py", "tests/test_adversarial_benchmark.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "packer_and_apply_security_hardening": {
+      "domain": "cli",
+      "description": "Fase 8B: Proteção anti-RCE por prompt injection em `blind-ai apply` (bloquear escrita em .git/, .agents/, .github/, .venv/, .blindai.toml e arquivos bloqueados pelo FileFilter como .env/*.pem/*.key), bloqueio de symlinks externos e cálculo O(N) de max_tokens no ContextPacker, e exposição de --max-tokens, --max-file-bytes e --case-insensitive-terms na CLI `blind-ai pack`.",
+      "files": [
+        "src/blind_ai/core/packer.py",
+        "src/blind_ai/cli/main.py",
+        "tests/test_packer.py",
+        "tests/test_cli_v1.py"
+      ],
+      "invariants": [
+        "`blind-ai apply` bloqueia qualquer bloco cujo caminho aponte para diretórios protegidos (`.git`, `.agents`, `.github`, `.venv`, `__pycache__`, `node_modules`), para `.blindai.toml` ou para arquivos bloqueados pelo `FileFilter` (`.env`, `*.pem`, `*.key`, etc.), retornando código de saída != 0.",
+        "`ContextPacker.pack` bloqueia arquivos que sejam symlinks (`is_symlink()`) ou cujo `resolve()` escape de `root`, e calcula `max_tokens` incrementalmente em O(N) sem reconstruir o bundle inteiro a cada arquivo.",
+        "A CLI `blind-ai pack` aceita `--max-tokens`, `--max-file-bytes` e `--case-insensitive-terms` e repassa ao `ContextPacker`.",
+        "Mantém 100% dos testes existentes (`test_packer.py`, `test_cli.py`, `test_cli_v1.py`, `test_e2e_workflow.py`) aprovados."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_packer.py", "tests/test_cli.py", "tests/test_cli_v1.py", "tests/test_e2e_workflow.py", "-v"],
+      "runtime_mode": "cli_command",
+      "cli_probe_command": ["{python}", "-m", "blind_ai", "pack", "src", "--max-tokens", "50000", "--json"],
+      "probes": []
+    },
+    "proxy_session_header_and_default_session": {
+      "domain": "proxy",
+      "description": "Fase 8C: Suporte ao header HTTP `X-Blind-AI-Session-Id` e sessão padrão opcional (`--default-session-id`, padrão 'default' quando omitido em `/v1/chat/completions`) para continuidade multi-turn transparente em IDEs e SDKs OpenAI que não enviam `session_id` no JSON.",
+      "files": [
+        "src/blind_ai/proxy/server.py",
+        "tests/test_openai_gateway.py",
+        "tests/test_proxy.py"
+      ],
+      "invariants": [
+        "Em `/v1/chat/completions`, `/v1/sanitize` e `/v1/proxy/echo`, se `session_id` não vier no JSON, o servidor usa o header `X-Blind-AI-Session-Id` (quando presente e não-vazio); em `/v1/restore`, aceita `session_id` do JSON ou do header `X-Blind-AI-Session-Id`.",
+        "Em `/v1/chat/completions`, quando nem `payload['session_id']` nem o header `X-Blind-AI-Session-Id` são enviados, reutiliza `server.default_session_id` (configurável via `create_server(..., default_session_id=...)` e `--default-session-id`, padrão `'default'`) para que chamadas multi-turn consecutivas da mesma IDE compartilhem o mesmo cofre.",
+        "Mantém 100% dos testes existentes em `tests/test_openai_gateway.py` e `tests/test_proxy.py` aprovados."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_openai_gateway.py", "tests/test_proxy.py", "-v"],
+      "runtime_mode": "http_server",
+      "probes": [
+        {
+          "name": "proxy_healthcheck",
+          "method": "GET",
+          "path": "/health",
+          "expected_status": 200,
+          "expected_json_subset": { "status": "ok" }
+        },
+        {
+          "name": "proxy_default_session_chat",
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "payload": {
+            "model": "local-echo",
+            "messages": [
+              { "role": "user", "content": "const MASTER_KEY = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6';" }
+            ]
+          },
+          "expected_status": 200,
+          "expected_body_contains": "choices"
+        }
+      ]
     }
   }
 }

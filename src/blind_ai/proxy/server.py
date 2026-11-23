@@ -144,6 +144,7 @@ class BlindAIProxyServer(ThreadingHTTPServer):
         upstream_api_key: str | None = None,
         auth_token: str | None = None,
         max_body_bytes: int = MAX_BODY_BYTES,
+        default_session_id: str | None = "default",
     ) -> None:
         if (
             isinstance(max_body_bytes, bool)
@@ -151,12 +152,19 @@ class BlindAIProxyServer(ThreadingHTTPServer):
             or max_body_bytes <= 0
         ):
             raise ValueError("max_body_bytes must be a positive integer.")
+        if default_session_id is not None and (
+            not isinstance(default_session_id, str) or not default_session_id.strip()
+        ):
+            raise ValueError("default_session_id must be None or a non-empty string.")
         self.session_store = session_store or SessionStore()
         self.quiet = quiet
         self.upstream_url = upstream_url
         self.upstream_api_key = upstream_api_key
         self.auth_token = auth_token
         self.max_body_bytes = max_body_bytes
+        self.default_session_id = (
+            default_session_id.strip() if default_session_id is not None else None
+        )
         super().__init__(server_address, BlindAIRequestHandler)
 
 
@@ -259,6 +267,10 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
             return
 
         session_id = payload.get("session_id")
+        if session_id is None:
+            header_sid = self.headers.get("X-Blind-AI-Session-Id")
+            if header_sid is not None and header_sid.strip():
+                session_id = header_sid.strip()
         if not isinstance(session_id, str) or not session_id.strip():
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
@@ -325,7 +337,10 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
         if payload is None:
             return
 
-        session_id = self._validate_optional_session_id(payload)
+        session_id = self._validate_optional_session_id(
+            payload,
+            fallback_session_id=self.server.default_session_id,
+        )
         if session_id is _INVALID:
             return
 
@@ -360,9 +375,17 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
             extra_headers={"X-Blind-AI-Session-Id": resolved_session_id},
         )
 
-    def _validate_optional_session_id(self, payload: dict[str, Any]) -> str | None | object:
+    def _validate_optional_session_id(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback_session_id: str | None = None,
+    ) -> str | None | object:
         if "session_id" not in payload or payload["session_id"] is None:
-            return None
+            header_sid = self.headers.get("X-Blind-AI-Session-Id")
+            if header_sid is not None and header_sid.strip():
+                return header_sid.strip()
+            return fallback_session_id
         session_id = payload["session_id"]
         if not isinstance(session_id, str) or not session_id.strip():
             self._send_json(
@@ -462,6 +485,7 @@ def create_server(
     max_body_bytes: int = MAX_BODY_BYTES,
     session_ttl: float | None = None,
     clock: Callable[[], float] | None = None,
+    default_session_id: str | None = "default",
 ) -> BlindAIProxyServer:
     """Instantiate a configured :class:`BlindAIProxyServer`."""
     store = SessionStore(
@@ -482,6 +506,7 @@ def create_server(
         upstream_api_key=resolved_upstream_key,
         auth_token=auth_token,
         max_body_bytes=max_body_bytes,
+        default_session_id=default_session_id,
     )
 
 
@@ -534,12 +559,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional session inactivity TTL in seconds.",
     )
+    parser.add_argument(
+        "--default-session-id",
+        default="default",
+        help="Default session ID for /v1/chat/completions when omitted from payload and header (default: default).",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint for launching the local Blind AI HTTP server."""
     args = build_arg_parser().parse_args(argv)
+    default_sid = args.default_session_id if args.default_session_id and args.default_session_id.strip() else None
     server = create_server(
         host=args.host,
         port=args.port,
@@ -549,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
         auth_token=args.auth_token,
         max_body_bytes=args.max_body_bytes,
         session_ttl=args.session_ttl,
+        default_session_id=default_sid,
     )
     bound_host, bound_port = server.server_address[:2]
     print(

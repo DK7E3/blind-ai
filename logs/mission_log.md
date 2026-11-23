@@ -90,3 +90,18 @@
 - **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(32ms), gate_2_unit_tests=ok(12139ms), gate_3_cli_runtime=ok(713ms)).
 - **Evidência:** `{"passed": true, "results": [{"feature": "cli_apply_staged_git_and_env_passphrase", "domain": "cli", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 32, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 12139, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_cli_runtime", "ok": true, "ms": 713, "summary": "CLI real executada com sucesso."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
 
+## [2026-11-22 22:48:17] T19 — `scanner_v3_multilang_and_zero_stdlib_fp` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(25ms), gate_2_unit_tests=ok(510ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "scanner_v3_multilang_and_zero_stdlib_fp", "domain": "core", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 25, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 510, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 22:51:30] T20 — `packer_and_apply_security_hardening` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(41ms), gate_2_unit_tests=ok(12938ms), gate_3_cli_runtime=ok(903ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "packer_and_apply_security_hardening", "domain": "cli", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 41, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 12938, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_cli_runtime", "ok": true, "ms": 903, "summary": "CLI real executada com sucesso."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 22:54:09] T21 — `proxy_session_header_and_default_session` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado por evidência determinística (gate_1_hard_constraints=ok(6ms), gate_2_unit_tests=ok(6170ms), gate_3_http_runtime=ok(569ms)).
+- **Evidência:** `{"passed": true, "results": [{"feature": "proxy_session_header_and_default_session", "domain": "proxy", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 6, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 6170, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_http_runtime", "ok": true, "ms": 569, "summary": "2/2 probe(s) validados ao vivo no Proxy HTTP."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+

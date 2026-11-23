@@ -32,6 +32,8 @@ from blind_ai.core.vault import PseudonymVault
 TECHNICAL_DIRS: frozenset[str] = frozenset(
     {
         ".git",
+        ".agents",
+        ".github",
         ".venv",
         "__pycache__",
         "node_modules",
@@ -470,15 +472,24 @@ class ContextPacker:
         blocked_files: list[str] = []
         blocked_reasons: dict[str, str] = {}
         sanitized_entries: list[tuple[str, str]] = []
+        running_section_chars = 0
+        running_tree_chars = 1  # "." root line
 
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             current_dir = Path(dirpath)
             rel_dir = current_dir.relative_to(root)
 
-            # Prune technical directories and gitignored directories deterministically.
+            # Prune technical directories, symlinked directories, and gitignored directories deterministically.
             kept_dirs: list[str] = []
             for dirname in sorted(dirnames):
                 if dirname in TECHNICAL_DIRS:
+                    continue
+                child_dir_path = current_dir / dirname
+                if child_dir_path.is_symlink():
+                    continue
+                try:
+                    child_dir_path.resolve().relative_to(root)
+                except (OSError, ValueError):
                     continue
                 rel_child_dir = (
                     dirname
@@ -495,6 +506,21 @@ class ContextPacker:
                 rel_posix = file_path.relative_to(root).as_posix()
 
                 if _is_gitignored(rel_posix, gitignore_rules, is_dir=False):
+                    continue
+
+                if file_path.is_symlink():
+                    blocked_files.append(rel_posix)
+                    blocked_reasons[rel_posix] = "Blocked: symbolic link is not allowed"
+                    continue
+
+                try:
+                    resolved_file = file_path.resolve()
+                    resolved_file.relative_to(root)
+                except (OSError, ValueError):
+                    blocked_files.append(rel_posix)
+                    blocked_reasons[rel_posix] = (
+                        f"Blocked: resolved path escapes repository root ({root})"
+                    )
                     continue
 
                 lock_pattern = _matches_lockfile_or_minified(rel_posix)
@@ -540,11 +566,20 @@ class ContextPacker:
                     case_insensitive=effective_case_insensitive,
                 )
 
+                entry_section_chars = self._entry_section_char_len(
+                    rel_posix, sanitized_content
+                )
+                entry_tree_chars = self._estimate_tree_line_chars(rel_posix)
+
                 if effective_max_tokens is not None:
-                    candidate_files = [*included_files, rel_posix]
-                    candidate_entries = [*sanitized_entries, (rel_posix, sanitized_content)]
-                    candidate_bundle = self._format_bundle(candidate_files, candidate_entries)
-                    candidate_tokens = len(candidate_bundle) // 4
+                    candidate_total_chars = (
+                        self._BUNDLE_HEADER_BASE_CHARS
+                        + running_tree_chars
+                        + entry_tree_chars
+                        + running_section_chars
+                        + entry_section_chars
+                    )
+                    candidate_tokens = candidate_total_chars // 4
                     if candidate_tokens > effective_max_tokens:
                         blocked_files.append(rel_posix)
                         blocked_reasons[rel_posix] = (
@@ -554,6 +589,8 @@ class ContextPacker:
 
                 included_files.append(rel_posix)
                 sanitized_entries.append((rel_posix, sanitized_content))
+                running_section_chars += entry_section_chars
+                running_tree_chars += entry_tree_chars
 
         bundle = self._format_bundle(included_files, sanitized_entries)
         return PackResult(
@@ -566,6 +603,40 @@ class ContextPacker:
             vault=self.vault,
             blocked_reasons=blocked_reasons,
         )
+
+    _BUNDLE_HEADER_BASE_CHARS: int = len(
+        "# Repository Context Bundle\n\n## File Tree\n\n```text\n\n```\n\n## Files\n"
+    )
+
+    @staticmethod
+    def _entry_section_char_len(rel_posix: str, sanitized_content: str) -> int:
+        """Return exact character contribution of a file section in the bundle."""
+        fence = _fence_for_content(sanitized_content)
+        lang = _language_for_path(rel_posix)
+        body = sanitized_content.rstrip("\n")
+        # Matches "\n\n### `{rel_posix}`\n\n{fence}{lang}\n{body}\n{fence}"
+        return (
+            2
+            + 5
+            + len(rel_posix)
+            + 1
+            + 2
+            + len(fence)
+            + len(lang)
+            + 1
+            + len(body)
+            + 1
+            + len(fence)
+        )
+
+    @staticmethod
+    def _estimate_tree_line_chars(rel_posix: str) -> int:
+        """Return O(1) incremental character estimate for adding *rel_posix* to the file tree."""
+        parts = rel_posix.split("/")
+        depth = len(parts)
+        filename = parts[-1]
+        # Newline + 4 chars per depth prefix + file label
+        return 1 + (4 * depth) + len(filename)
 
     @staticmethod
     def _format_bundle(

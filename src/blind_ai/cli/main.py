@@ -25,7 +25,13 @@ from blind_ai.core.benchmark import (
 )
 from blind_ai.core.config import BlindAIConfig
 from blind_ai.core.contextual import HybridScanner
-from blind_ai.core.packer import ContextPacker, ScannerProtocol
+from blind_ai.core.file_filter import FileFilter
+from blind_ai.core.packer import (
+    ContextPacker,
+    DEFAULT_MAX_FILE_BYTES,
+    ScannerProtocol,
+    TECHNICAL_DIRS,
+)
 from blind_ai.core.scanner import DeterministicScanner, Finding
 from blind_ai.core.secure_vault import load_encrypted, save_encrypted
 from blind_ai.core.vault import PseudonymVault
@@ -33,6 +39,23 @@ from blind_ai.proxy import server as proxy_server
 
 _APPLY_HEADING_RE = re.compile(r"^\s*###\s+`([^`\r\n]+)`\s*$")
 _FENCE_OPEN_RE = re.compile(r"^(`{3,})([^\r\n`]*)$")
+
+_PROTECTED_APPLY_DIRS: frozenset[str] = frozenset(
+    {
+        *(d.lower() for d in TECHNICAL_DIRS),
+        ".git",
+        ".agents",
+        ".github",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+    }
+)
+_PROTECTED_APPLY_FILES: frozenset[str] = frozenset(
+    {
+        ".blindai.toml",
+    }
+)
 
 
 def _resolve_passphrase(explicit_passphrase: str | None) -> str | None:
@@ -235,11 +258,19 @@ def _extract_markdown_file_blocks(markdown_text: str) -> list[tuple[str, str]]:
     return blocks
 
 
-def _validate_safe_target_path(target_root: Path, raw_rel_path: str) -> Path:
+def _validate_safe_target_path(
+    target_root: Path,
+    raw_rel_path: str,
+    *,
+    file_filter: FileFilter | None = None,
+) -> Path:
     """Validate that *raw_rel_path* is a safe relative path inside *target_root*.
 
-    Rejects empty paths, absolute paths, Windows drive paths, and any ``..``
-    traversal component.
+    Rejects empty paths, absolute paths, Windows drive paths, any ``..``
+    traversal component, protected directory segments (``.git``, ``.agents``,
+    ``.github``, ``.venv``, ``__pycache__``, ``node_modules``), protected
+    config files (``.blindai.toml``), symbolic links along the path, and any
+    path blocked by :class:`~blind_ai.core.file_filter.FileFilter`.
     """
     cleaned = raw_rel_path.strip()
     if not cleaned:
@@ -257,7 +288,40 @@ def _validate_safe_target_path(target_root: Path, raw_rel_path: str) -> Path:
     if not parts or any(part in ("..", "") for part in parts) or parts == (".",):
         raise ValueError(f"Unsafe path traversal detected in path: {raw_rel_path!r}")
 
+    for part in parts[:-1]:
+        if part.lower() in _PROTECTED_APPLY_DIRS:
+            raise ValueError(
+                f"Blocked write to protected directory '{part}' in path: {raw_rel_path!r}"
+            )
+
+    if parts[0].lower() in _PROTECTED_APPLY_DIRS:
+        raise ValueError(
+            f"Blocked write to protected directory '{parts[0]}' in path: {raw_rel_path!r}"
+        )
+
+    filename_lower = parts[-1].lower()
+    if filename_lower in _PROTECTED_APPLY_FILES or filename_lower in _PROTECTED_APPLY_DIRS:
+        raise ValueError(
+            f"Blocked write to protected file '{parts[-1]}' in path: {raw_rel_path!r}"
+        )
+
+    active_filter = file_filter if file_filter is not None else FileFilter(check_binary_content=False)
+    rel_posix_str = posix_path.as_posix()
+    decision = active_filter.check_path(rel_posix_str)
+    if not decision.allowed:
+        raise ValueError(
+            f"Blocked write to sensitive/filtered file {raw_rel_path!r}: {decision.reason}"
+        )
+
     resolved_root = target_root.resolve()
+    current_check = resolved_root
+    for part in parts:
+        current_check = current_check / part
+        if current_check.is_symlink():
+            raise ValueError(
+                f"Blocked write through symbolic link in path: {raw_rel_path!r}"
+            )
+
     candidate = (resolved_root / Path(*parts)).resolve()
     try:
         candidate.relative_to(resolved_root)
@@ -492,9 +556,17 @@ def _cmd_pack(args: argparse.Namespace) -> int:
         file_filter=cfg.build_file_filter(),
         proprietary_terms=cfg.proprietary_terms,
         config=cfg,
+        max_file_bytes=args.max_file_bytes,
+        max_tokens=args.max_tokens,
+        case_insensitive_terms=bool(args.case_insensitive_terms),
     )
     try:
-        result = packer.pack(args.directory)
+        result = packer.pack(
+            args.directory,
+            max_file_bytes=args.max_file_bytes,
+            max_tokens=args.max_tokens,
+            case_insensitive_terms=bool(args.case_insensitive_terms),
+        )
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"Error packing directory {args.directory}: {exc}\n")
         return 2
@@ -581,10 +653,20 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         return 1
 
     target_root = Path(args.target_dir)
+    try:
+        cfg = _load_config(getattr(args, "config", None), start_dir=target_root)
+        apply_filter = cfg.build_file_filter(check_binary_content=False)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        apply_filter = FileFilter(check_binary_content=False)
+
     planned_writes: list[tuple[str, Path, str]] = []
     for raw_rel_path, code_body in blocks:
         try:
-            dest_path = _validate_safe_target_path(target_root, raw_rel_path)
+            dest_path = _validate_safe_target_path(
+                target_root,
+                raw_rel_path,
+                file_filter=apply_filter,
+            )
         except ValueError as exc:
             sys.stderr.write(f"Error applying block {raw_rel_path!r}: {exc}\n")
             return 1
@@ -811,6 +893,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default=None,
         help="Optional path to a .blindai.toml configuration file.",
+    )
+    pack_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Optional maximum estimated token budget for the context bundle.",
+    )
+    pack_parser.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=DEFAULT_MAX_FILE_BYTES,
+        help=f"Maximum size in bytes per included file (default: {DEFAULT_MAX_FILE_BYTES}).",
+    )
+    pack_parser.add_argument(
+        "--case-insensitive-terms",
+        action="store_true",
+        help="Match proprietary terms case-insensitively.",
     )
     pack_parser.add_argument(
         "--json",

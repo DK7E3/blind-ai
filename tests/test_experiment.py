@@ -109,6 +109,20 @@ class TestContextualDetector(unittest.TestCase):
             with self.subTest(sample_index=idx):
                 self.assertEqual(self.contextual.scan_text(text), [])
 
+    def test_rejects_comment_code_expressions_and_underscore_bounded_cues(self) -> None:
+        self.assertEqual(ContextualDetector._score_secret_candidate("token[0][:0"), 0.0)
+        self.assertEqual(ContextualDetector._score_secret_candidate("self._userinfo[1"), 0.0)
+        self.assertEqual(ContextualDetector._score_secret_candidate("secure=None"), 0.0)
+        self.assertEqual(ContextualDetector._score_secret_candidate("parse_XXX"), 0.0)
+
+        # Line 1 has '_secret_helper' (underscore boundary must prevent cue trigger on line 1);
+        # Line 4 has an explicit 'password' cue with code expressions that must be rejected.
+        comment_with_code_and_underscore_id = (
+            "# Uses _secret_helper with candidate Zx9Kp2Lm4Nq7Rs1Tv8\n\n\n"
+            "# password note: token[0][:0] self._userinfo[1] secure=None parse_XXX\n"
+        )
+        self.assertEqual(self.contextual.scan_text(comment_with_code_and_underscore_id), [])
+
 
 class TestHybridScanner(unittest.TestCase):
     """Tests for HybridScanner combining Layer 2 and Layer 3 with deduplication."""

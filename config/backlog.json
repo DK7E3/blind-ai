@@ -227,6 +227,43 @@
       "status": "approved",
       "attempts": 1,
       "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(32ms), gate_2_unit_tests=ok(12139ms), gate_3_cli_runtime=ok(713ms))."
+    },
+    {
+      "id": "T19",
+      "phase": "Fase 8",
+      "feature_key": "scanner_v3_multilang_and_zero_stdlib_fp",
+      "title": "Detectar atribuições sensíveis multi-linguagem (JS/TS/Go) e eliminar falsos positivos restantes na stdlib (loopback/0.x, MIME charset, tabelas hex, expressões em comentários)",
+      "depends_on": [
+        "T15"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(25ms), gate_2_unit_tests=ok(510ms))."
+    },
+    {
+      "id": "T20",
+      "phase": "Fase 8",
+      "feature_key": "packer_and_apply_security_hardening",
+      "title": "Bloquear sobrescrita de .git/.agents/.env no `blind-ai apply`, bloquear symlinks e otimizar max_tokens O(N) no ContextPacker + flags CLI",
+      "depends_on": [
+        "T16",
+        "T18"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(41ms), gate_2_unit_tests=ok(12938ms), gate_3_cli_runtime=ok(903ms))."
+    },
+    {
+      "id": "T21",
+      "phase": "Fase 8",
+      "feature_key": "proxy_session_header_and_default_session",
+      "title": "Suportar header X-Blind-AI-Session-Id e sessão persistente padrão no proxy /v1/chat/completions",
+      "depends_on": [
+        "T17"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado por evidência determinística (gate_1_hard_constraints=ok(6ms), gate_2_unit_tests=ok(6170ms), gate_3_http_runtime=ok(569ms))."
     }
   ]
 }

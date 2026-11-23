@@ -602,6 +602,105 @@ class TestApplyEnvPassphraseAndHybridCLI(unittest.TestCase):
             self.assertNotIn("OPS-4242", bundle_text)
             self.assertIn("AKIAIOSFODNN7EXAMPLE", bundle_text)
 
+    def test_apply_blocks_protected_dirs_blindai_toml_and_filtered_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            vault_path = base / "vault.json"
+            target_dir = base / "repo"
+            target_dir.mkdir()
+
+            san_code, _, san_err = _run_cli(
+                ["sanitize", "-", "--vault", str(vault_path)],
+                stdin_text="x = 1\n",
+            )
+            self.assertEqual(san_code, 0, msg=san_err)
+
+            forbidden_paths = [
+                ".git/hooks/pre-commit",
+                ".git/config",
+                ".agents/hooks.json",
+                ".github/workflows/pwn.yml",
+                ".venv/lib/site.py",
+                "__pycache__/evil.py",
+                "node_modules/pkg/index.js",
+                ".blindai.toml",
+                ".env",
+                ".env.production",
+                "certs/private.pem",
+                "keys/server.key",
+            ]
+            for forbidden in forbidden_paths:
+                malicious_md = (
+                    f"### `{forbidden}`\n"
+                    "```text\n"
+                    "pwned\n"
+                    "```\n"
+                )
+                code, _, err = _run_cli(
+                    [
+                        "apply",
+                        "-",
+                        "--vault",
+                        str(vault_path),
+                        "--target-dir",
+                        str(target_dir),
+                    ],
+                    stdin_text=malicious_md,
+                )
+                self.assertNotEqual(
+                    code,
+                    0,
+                    msg=f"Expected non-zero exit code for forbidden path {forbidden!r}",
+                )
+                self.assertIn("error", err.lower())
+                self.assertFalse((target_dir / forbidden).exists())
+
+    def test_pack_cli_accepts_max_tokens_max_file_bytes_and_case_insensitive_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            (repo / ".blindai.toml").write_text(
+                'proprietary_terms = ["ProjectOrion"]\n',
+                encoding="utf-8",
+            )
+            (repo / "a_small.py").write_text(
+                'NAME = "projectorion"\nUPPER = "PROJECTORION"\n',
+                encoding="utf-8",
+            )
+            (repo / "b_oversized.py").write_text(
+                "DATA = '" + ("X" * 400) + "'\n",
+                encoding="utf-8",
+            )
+            (repo / "c_budget.py").write_text(
+                "MORE = '" + ("Y" * 180) + "'\n",
+                encoding="utf-8",
+            )
+
+            bundle_path = Path(tmpdir) / "bundle.md"
+            code, out, err = _run_cli(
+                [
+                    "pack",
+                    str(repo),
+                    "--output",
+                    str(bundle_path),
+                    "--max-file-bytes",
+                    "250",
+                    "--max-tokens",
+                    "95",
+                    "--case-insensitive-terms",
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, msg=err)
+            summary = json.loads(out)
+            self.assertIn("a_small.py", summary["included_files"])
+            self.assertIn("b_oversized.py", summary["blocked_files"])
+            self.assertIn("c_budget.py", summary["blocked_files"])
+
+            bundle_text = bundle_path.read_text(encoding="utf-8")
+            self.assertNotIn("projectorion", bundle_text.lower())
+            self.assertIn("__BLIND_PROPRIETARY_TERM_", bundle_text)
+
 
 if __name__ == "__main__":
     unittest.main()

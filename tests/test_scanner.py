@@ -81,6 +81,9 @@ class TestDeterministicScannerDetections(unittest.TestCase):
             "lan = '192.168.144.27'\n"
             "public_dns = '8.8.8.8'\n"
             "invalid_ip = '999.999.1.1'\n"
+            "loopback = '127.0.0.1'\n"
+            "unspecified = '0.0.0.0'\n"
+            "version_like = '0.5.1.2'\n"
         )
         findings = self.scanner.scan_text(text)
         self.assertEqual(
@@ -216,6 +219,8 @@ class TestDeterministicScannerDetections(unittest.TestCase):
             'HANDLER_CLASS = "SimpleHTTPRequestHandler"\n'
             ' SERIALIZER_NAME = " JSONWebSignatureSerializerConfiguration "\n'.strip() + "\n"
             'MIME_JSON_LD = "application/vnd.acme.custom+json"\n'
+            'MIME_HTML_UTF8 = "text/html;charset=utf-8"\n'
+            'HEX_TABLE = "0123456789ABCDEFabcdef"\n'
             'REGEX_PATTERN = r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==)?$"\n'
         )
         self.assertEqual(self.scanner.scan_text(code), [])
@@ -231,8 +236,34 @@ class TestDeterministicScannerDetections(unittest.TestCase):
         )
         self.assertFalse(
             self.scanner._is_high_entropy_token(
+                "text/html;charset=utf-8", sensitive_context=False
+            )
+        )
+        self.assertFalse(
+            self.scanner._is_high_entropy_token(
+                "0123456789ABCDEFabcdef", sensitive_context=True
+            )
+        )
+        self.assertFalse(
+            self.scanner._is_high_entropy_token(
                 r"^(?:[A-Za-z0-9+/]{4})*$", sensitive_context=False
             )
+        )
+
+    def test_detects_non_python_sensitive_assignments_in_js_ts_go_yaml(self) -> None:
+        non_python_code = (
+            'export const MASTER_KEY = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6";\n'
+            'const config = { CLIENT_SECRET: "Zx9Kp2Lm4Nq7Rs1Tv8Wz3Yb6" };\n'
+            'apiSecret := "Qp8Wn7Vm6Cx5Zl4Kj3Hg2Fd1Sa0"\n'
+        )
+        findings = self.scanner.scan_text(non_python_code)
+        self.assertEqual(
+            [(f.kind, f.value, f.line) for f in findings],
+            [
+                ("high_entropy_token", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6", 1),
+                ("high_entropy_token", "Zx9Kp2Lm4Nq7Rs1Tv8Wz3Yb6", 2),
+                ("high_entropy_token", "Qp8Wn7Vm6Cx5Zl4Kj3Hg2Fd1Sa0", 3),
+            ],
         )
 
 

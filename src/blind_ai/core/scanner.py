@@ -23,10 +23,27 @@ _BEARER_TOKEN_RE = re.compile(
 )
 
 _MIME_TYPE_RE = re.compile(
-    r"^(?:application|text|image|audio|video|multipart|font|model|message)/[A-Za-z0-9.+_-]+$"
+    r"^(?:application|text|image|audio|video|multipart|font|model|message)/[A-Za-z0-9.+_-]+(?:\s*;\s*[A-Za-z0-9._-]+=[A-Za-z0-9._-]+)*$"
 )
 
 _REGEX_LIKE_CHARS: frozenset[str] = frozenset("^$*+?()[]{}|\\")
+
+_SEQUENTIAL_ALPHABET_SUBSTRINGS: tuple[str, ...] = (
+    "0123456789abcdef",
+    "0123456789ABCDEF",
+    "abcdefghijklmnopqrstuvwxyz",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+)
+
+_NON_PYTHON_SENSITIVE_ASSIGN_RE = re.compile(
+    r"""(?mx)
+    (?:^|[\s{,;])
+    ["']?(?P<name>[A-Za-z_][A-Za-z0-9_-]{1,63})["']?
+    \s*(?::\s*[A-Za-z0-9_<>\[\]|.?]+\s*)?
+    (?:=|:=|:)
+    \s*(?:["'`](?P<qvalue>[^"'`\r\n]{16,})["'`]|(?P<uvalue>[^\s"'`#;,{}()\[\]]{16,}))
+    """
+)
 
 _REGEX_RULES: tuple[tuple[str, re.Pattern[str], float], ...] = (
     (
@@ -255,7 +272,12 @@ class DeterministicScanner:
                 ip_obj = ipaddress.ip_address(raw_ip)
             except ValueError:
                 continue
-            if ip_obj.is_private:
+            if (
+                ip_obj.is_private
+                and not ip_obj.is_loopback
+                and not ip_obj.is_unspecified
+                and not raw_ip.startswith("0.")
+            ):
                 start, end = match.span()
                 findings.append(
                     Finding(
@@ -292,7 +314,7 @@ class DeterministicScanner:
         try:
             tree = ast.parse(text)
         except SyntaxError:
-            return []
+            return self._scan_non_python_sensitive_assignments(text)
 
         docstring_ids: set[int] = set()
         sensitive_value_ids: set[int] = set()
@@ -375,6 +397,30 @@ class DeterministicScanner:
 
         return findings
 
+    def _scan_non_python_sensitive_assignments(self, text: str) -> list[Finding]:
+        findings: list[Finding] = []
+        for match in _NON_PYTHON_SENSITIVE_ASSIGN_RE.finditer(text):
+            name = match.group("name")
+            if not _is_sensitive_name(name):
+                continue
+            group_name = "qvalue" if match.group("qvalue") is not None else "uvalue"
+            value = match.group(group_name)
+            if not value or not self._is_high_entropy_token(value, sensitive_context=True):
+                continue
+            start, end = match.span(group_name)
+            findings.append(
+                Finding(
+                    kind="high_entropy_token",
+                    value=value,
+                    start=start,
+                    end=end,
+                    line=_line_number(text, start),
+                    source="ast_entropy",
+                    confidence=0.88,
+                )
+            )
+        return findings
+
     def _is_high_entropy_token(self, value: str, *, sensitive_context: bool) -> bool:
         if len(value) < self.min_token_length:
             return False
@@ -387,6 +433,8 @@ class DeterministicScanner:
         if _MIME_TYPE_RE.match(value):
             return False
         if any(ch in _REGEX_LIKE_CHARS for ch in value):
+            return False
+        if any(seq in value for seq in _SEQUENTIAL_ALPHABET_SUBSTRINGS):
             return False
         if shannon_entropy(value) < self.min_entropy:
             return False

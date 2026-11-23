@@ -26,23 +26,23 @@ _PROTOCOL_RE = re.compile(r"^[A-Z]{2,8}/?\d+(?:\.\d+)?$")
 
 # Strong credential/secret context cues (matched as whole words, case-insensitive).
 _STRONG_CUE_RE = re.compile(
-    r"\b(?:"
+    r"(?<![A-Za-z0-9_])(?:"
     r"passwords?|passwds?|passphrases?|pwd|"
     r"secrets?|tokens?|apikeys?|api[_ -]?keys?|"
     r"webhooks?|credentials?|creds?|"
     r"vault|override|bearer|private[_ -]?keys?|signing"
-    r")\b",
+    r")(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
 # Secondary context modifiers that reinforce sensitivity when paired with a
 # secret-like candidate entity.
 _CONTEXT_MODIFIER_RE = re.compile(
-    r"\b(?:"
+    r"(?<![A-Za-z0-9_])(?:"
     r"internal|staging|sandbox|prod|production|"
     r"temporary|temp|emergency|migration|shared|"
     r"finance|database|db|admin|root|runbook|drill|backup"
-    r")\b",
+    r")(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
@@ -67,7 +67,7 @@ _LINE_COMMENT_RE = re.compile(r"(?:(?<!\w)#.*$|(?<![:/])//.*$)")
 # Linking words/separators used when scanning non-comment free text.
 _FREE_TEXT_ASSIGN_RE = re.compile(
     r"(?:"
-    r"\b(?:passwords?|passwds?|passphrases?|pwd|secrets?|tokens?|webhooks?|credentials?|api[_ -]?keys?)\b"
+    r"(?<![A-Za-z0-9_])(?:passwords?|passwds?|passphrases?|pwd|secrets?|tokens?|webhooks?|credentials?|api[_ -]?keys?)(?![A-Za-z0-9_])"
     r"\s*(?:[:=]|->|=>|\bis\b|\bare\b|\buse\b)\s*"
     r")",
     re.IGNORECASE,
@@ -147,8 +147,11 @@ def _score_secret_candidate(token: str) -> float:
         return 0.0
     if _PROTOCOL_RE.match(token) or _is_placeholder(token):
         return 0.0
-    # Reject obvious code call expressions or dotted attribute chains without digits.
-    if "(" in token or ")" in token:
+    # Reject obvious code call/indexing/keyword-arg expressions, placeholder _XXX suffixes,
+    # or dotted attribute chains without digits.
+    if "(" in token or ")" in token or "[" in token or "]" in token or "=" in token:
+        return 0.0
+    if token.upper().endswith("_XXX"):
         return 0.0
     if "." in token and not any(ch.isdigit() for ch in token):
         return 0.0
@@ -272,6 +275,8 @@ class ContextualDetector:
     internal, etc.) combined with a sliding line/token window and local NER
     heuristics to flag contextual secret leaks that pure regex/AST rules miss.
     """
+
+    _score_secret_candidate = staticmethod(_score_secret_candidate)
 
     def __init__(
         self,

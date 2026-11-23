@@ -634,6 +634,83 @@ class OpenAIGatewayIntegrationTests(unittest.TestCase):
             _stop_server(proxy, proxy_thread)
             _stop_server(upstream, upstream_thread)
 
+    def test_header_session_id_and_default_session_multi_turn_continuity(self) -> None:
+        upstream = _MockUpstreamServer(("127.0.0.1", 0))
+        upstream_url, upstream_thread = _start_server(upstream, "mock-upstream-t21")
+        proxy = create_server(
+            host="127.0.0.1",
+            port=0,
+            quiet=True,
+            upstream_url=upstream_url,
+            default_session_id="ide-default-session",
+        )
+        proxy_url, proxy_thread = _start_server(proxy, "blind-ai-t21-proxy")
+
+        try:
+            secret_default = "sk-proj-DEFAULTSESS1234567890abcdef"
+            # Turn 1: No session_id in JSON and no header -> uses server.default_session_id
+            s1, b1, h1 = _http_json(
+                f"{proxy_url}/v1/chat/completions",
+                payload={
+                    "model": "test-t21",
+                    "messages": [{"role": "user", "content": f"Turn 1 key {secret_default}"}],
+                },
+            )
+            self.assertEqual(s1, 200)
+            self.assertEqual(h1.get("X-Blind-AI-Session-Id"), "ide-default-session")
+            self.assertIn(secret_default, b1["choices"][0]["message"]["content"])
+
+            # Find placeholder generated in Turn 1
+            sent_turn_1 = upstream.received_requests[0]["messages"][0]["content"]
+            placeholder_1 = next(
+                tok for tok in sent_turn_1.split() if tok.startswith("__BLIND_")
+            )
+
+            # Turn 2: Subsequent request without session_id or header shares the same default vault!
+            # Even if the message only references the placeholder from Turn 1, the proxy restores it.
+            s2, b2, h2 = _http_json(
+                f"{proxy_url}/v1/chat/completions",
+                payload={
+                    "model": "test-t21",
+                    "messages": [{"role": "user", "content": f"Echo {placeholder_1}"}],
+                },
+            )
+            self.assertEqual(s2, 200)
+            self.assertEqual(h2.get("X-Blind-AI-Session-Id"), "ide-default-session")
+            self.assertEqual(
+                b2["choices"][0]["message"]["content"],
+                f"Upstream saw: Echo {secret_default}",
+            )
+
+            # Turn 3: Explicit X-Blind-AI-Session-Id header overrides default_session_id
+            secret_hdr = "ghp_HeaderSessionSecret1234567890ABCD"
+            s3, b3, h3 = _http_json(
+                f"{proxy_url}/v1/chat/completions",
+                payload={
+                    "model": "test-t21",
+                    "messages": [{"role": "user", "content": f"Header key {secret_hdr}"}],
+                },
+                headers={"X-Blind-AI-Session-Id": "custom-header-sid"},
+            )
+            self.assertEqual(s3, 200)
+            self.assertEqual(h3.get("X-Blind-AI-Session-Id"), "custom-header-sid")
+            self.assertEqual(
+                b3["choices"][0]["message"]["content"],
+                f"Upstream saw: Header key {secret_hdr}",
+            )
+            self.assertTrue(proxy.session_store.has_session("custom-header-sid"))
+
+            # CLI parser supports --default-session-id with 'default' as default
+            default_args = build_arg_parser().parse_args([])
+            self.assertEqual(default_args.default_session_id, "default")
+            custom_args = build_arg_parser().parse_args(
+                ["--default-session-id", "my-ide-session"]
+            )
+            self.assertEqual(custom_args.default_session_id, "my-ide-session")
+        finally:
+            _stop_server(proxy, proxy_thread)
+            _stop_server(upstream, upstream_thread)
+
 
 if __name__ == "__main__":
     unittest.main()

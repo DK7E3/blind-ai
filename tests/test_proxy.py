@@ -51,19 +51,20 @@ class LocalProxyServerTests(unittest.TestCase):
         payload: Any = None,
         *,
         raw_body: bytes | None = None,
+        headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, Any]]:
         url = f"{self.base_url}{path}"
-        headers: dict[str, str] = {}
+        req_headers: dict[str, str] = dict(headers or {})
         data: bytes | None = None
 
         if raw_body is not None:
             data = raw_body
-            headers["Content-Type"] = "application/json"
+            req_headers["Content-Type"] = "application/json"
         elif payload is not None:
             data = json.dumps(payload).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            req_headers["Content-Type"] = "application/json"
 
-        req = urllib_request.Request(url, data=data, headers=headers, method=method)
+        req = urllib_request.Request(url, data=data, headers=req_headers, method=method)
         try:
             with urllib_request.urlopen(req, timeout=5) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
@@ -194,6 +195,47 @@ class LocalProxyServerTests(unittest.TestCase):
 
         status_post, _ = self._request("POST", "/v1/does-not-exist", {"text": "x"})
         self.assertEqual(status_post, 404)
+
+    def test_header_session_id_across_sanitize_restore_and_echo(self) -> None:
+        header_sid = "header-session-t21"
+        secret = "sk-proj-HEADERSESSION1234567890abcdef"
+        original = f"api_key = '{secret}'"
+
+        # 1) /v1/sanitize with X-Blind-AI-Session-Id header (no session_id in JSON)
+        status, san_body = self._request(
+            "POST",
+            "/v1/sanitize",
+            {"text": original},
+            headers={"X-Blind-AI-Session-Id": header_sid},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(san_body["session_id"], header_sid)
+        sanitized = san_body["sanitized_text"]
+        self.assertNotIn(secret, sanitized)
+        self.assertIn("__BLIND_", sanitized)
+
+        # 2) /v1/restore with X-Blind-AI-Session-Id header (no session_id in JSON)
+        res_status, res_body = self._request(
+            "POST",
+            "/v1/restore",
+            {"text": sanitized},
+            headers={"X-Blind-AI-Session-Id": header_sid},
+        )
+        self.assertEqual(res_status, 200)
+        self.assertEqual(res_body["session_id"], header_sid)
+        self.assertEqual(res_body["restored_text"], original)
+
+        # 3) /v1/proxy/echo with X-Blind-AI-Session-Id header reuses the same session placeholders
+        echo_status, echo_body = self._request(
+            "POST",
+            "/v1/proxy/echo",
+            {"text": original},
+            headers={"X-Blind-AI-Session-Id": header_sid},
+        )
+        self.assertEqual(echo_status, 200)
+        self.assertEqual(echo_body["session_id"], header_sid)
+        self.assertEqual(echo_body["sanitized_text"], sanitized)
+        self.assertEqual(echo_body["restored_text"], original)
 
 
 if __name__ == "__main__":
