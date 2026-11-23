@@ -50,40 +50,56 @@ Após a instalação, o comando `blind-ai` (ou `python -m blind_ai`) fica dispon
 
 ## Guia de Uso
 
-### Fluxo 1 — CLI de Empacotamento Seguro (`pack` / `restore` e `scan`)
+### Fluxo 1 — CLI de Empacotamento Seguro (`pack` / `apply` / `restore` e `scan`)
 
-Ideal para preparar o contexto de um repositório inteiro antes de enviar a qualquer LLM (chat web, CLI ou API) e restaurar a resposta localmente com integridade sintática:
+Ideal para enviar o repositório inteiro como contexto para qualquer LLM (chat web, CLI ou API) e aplicar as alterações retornadas pela IA diretamente no projeto:
 
-1. **Empacotar e sanitizar o repositório com cofre cifrado:**
+1. **Definir a passphrase via variável de ambiente (evita expor a senha no histórico do shell):**
+
+   ```bash
+   export BLIND_AI_PASSPHRASE="sua-senha-forte"
+   # PowerShell: $env:BLIND_AI_PASSPHRASE = "sua-senha-forte"
+   ```
+
+2. **Empacotar e sanitizar o repositório inteiro com cofre cifrado (`0600`):**
 
    ```bash
    blind-ai pack . \
      -o context_bundle.md \
      --vault .blind_session.vault \
-     --passphrase "sua-senha-forte"
+     --max-tokens 120000 \
+     --max-file-bytes 1000000 \
+     --case-insensitive-terms
    ```
 
-   - Bloqueia automaticamente arquivos sensíveis (`.env`, chaves privadas, certificados, binários e padrões extras do `.blindai.toml`).
-   - Substitui segredos, IPs privados, caminhos internos e termos proprietários por placeholders determinísticos (`__BLIND_*__`), mantendo consistência entre todos os arquivos.
+   - Usa `HybridScanner` (Camadas 2 e 3: AWS, OpenAI, Anthropic, Google `AIza`, Stripe, Slack, GitHub, JWT, credenciais em URLs `postgres://` e `https://`, chaves PEM inline, Bearer tokens, atribuições multi-linguagem JS/TS/Go/Rust/YAML, IPs privados RFC 1918, caminhos internos e comentários sensíveis).
+   - Bloqueia automaticamente arquivos sensíveis (`.env`, `*.pem`, `*.key`, binários), symlinks externos e lockfiles/minificados (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `Cargo.lock`, `*.min.js`, `*.min.css`).
+   - Substitui todos os achados e `proprietary_terms` por placeholders determinísticos (`__BLIND_*__`) compartilhando o mesmo cofre entre todos os arquivos.
    - Use `--json` para obter o resumo estruturado da execução.
 
-2. **Restaurar o código retornado pela IA usando o cofre local:**
+3. **Aplicar automaticamente no projeto os arquivos alterados pela IA (`apply`) ou restaurar um arquivo único (`restore`):**
 
    ```bash
+   # Aplica blocos Markdown "### `caminho/arquivo.py`" retornados pela IA direto no projeto
+   # (com proteção anti-RCE bloqueando escrita em .git/, .agents/, .vscode/, .cursor/, conftest.py, setup.py, .env, etc.)
+   blind-ai apply resposta_ia.md \
+     --vault .blind_session.vault \
+     --target-dir .
+
+   # Ou restaurar um único arquivo/texto
    blind-ai restore resposta_ia.py \
      --vault .blind_session.vault \
-     --passphrase "sua-senha-forte" \
      -o codigo_restaurado.py
    ```
 
-3. **Auditoria pré-commit e sanitização pontual:**
+4. **Auditoria pré-commit (lendo direto do índice Git via `git show :<path>`) e benchmark:**
 
    ```bash
-   # Escanear apenas arquivos staged no git e falhar (exit code 1) se houver vazamentos
+   # Escanear conteúdo exato staged no git e falhar (exit code 1) se houver vazamentos
    blind-ai scan --staged --strict
 
    # Sanitizar um arquivo ou stdin isoladamente
-   blind-ai sanitize app.py --vault session.vault --passphrase "sua-senha-forte" -o app.sanitized.py
+   blind-ai sanitize app.py --vault session.vault -o app.sanitized.py
 
    # Executar o benchmark sintético (métricas H1)
    blind-ai benchmark --format json
@@ -91,22 +107,28 @@ Ideal para preparar o contexto de um repositório inteiro antes de enviar a qual
 
 ### Fluxo 2 — Proxy/Gateway HTTP Local para IDEs (`blind-ai proxy`)
 
-Para integração transparente com IDEs e clientes compatíveis com a API OpenAI (`/v1/chat/completions`, com suporte a JSON e streaming SSE):
+Para integração transparente com IDEs (Cursor, Continue, Cline) e SDKs compatíveis com OpenAI (`/v1/chat/completions`, com suporte a JSON, streaming SSE e `tool_calls`):
 
 ```bash
+export BLIND_AI_UPSTREAM_API_KEY="sk-sua-chave-real-do-provedor"
+
 blind-ai proxy \
   --port 8765 \
   --auth-token "meu-token-local" \
-  --upstream-url "http://127.0.0.1:11434/v1" \
+  --upstream-url "https://api.openai.com/v1" \
+  --default-session-id "default" \
   --session-ttl 3600
 ```
 
-Configure sua IDE ou cliente para apontar o `Base URL` para `http://127.0.0.1:8765/v1` com header `Authorization: Bearer meu-token-local`. O gateway sanitiza automaticamente as mensagens enviadas ao provedor upstream e restaura os placeholders na resposta recebida.
+Configure sua IDE ou cliente para apontar o `Base URL` para `http://127.0.0.1:8765/v1` com header `Authorization: Bearer meu-token-local` (e opcionalmente `X-Blind-AI-Session-Id: minha-sessao`). O gateway:
+- Sanitiza automaticamente `messages[*].content` e `tool_calls[*].function.arguments` na ida e repassa `Authorization: Bearer $BLIND_AI_UPSTREAM_API_KEY` ao provedor upstream.
+- Restaura placeholders na resposta JSON e em streaming SSE (com `StreamRestorer` de janela deslizante).
+- **Hardening ativo (V1–V6)**: restrição de escopo de restauração anti-oráculo (só restaura placeholders efetivamente enviados na requisição atual), bloqueio de CSRF cross-origin (`Origin` / `Sec-Fetch-Site` / `text/plain`), proteção contra DNS Rebinding (validação de `Host`), limite de 256 sessões ativas e timeout de socket.
 
 Endpoints locais disponíveis:
 - `GET /health` — verificação de saúde do servidor local.
-- `POST /v1/chat/completions` — gateway compatível com OpenAI (JSON e SSE streaming).
-- `POST /v1/sanitize`, `POST /v1/restore`, `POST /v1/echo` — endpoints diretos de sanitização e restauração por sessão.
+- `POST /v1/chat/completions` — gateway compatível com OpenAI (JSON, SSE streaming e `tool_calls`).
+- `POST /v1/sanitize`, `POST /v1/restore`, `POST /v1/proxy/echo` — endpoints diretos de sanitização e restauração por sessão.
 
 ## Configuração (`.blindai.toml`)
 
@@ -146,9 +168,9 @@ blind-ai/
 ├── src/
 │   └── blind_ai/
 │       ├── core/                    # Scanner, FileFilter, Vault, SecureVault, Packer, Config, Benchmark
-│       ├── cli/                     # CLI (`scan`, `sanitize`, `restore`, `pack`, `proxy`, `benchmark`)
+│       ├── cli/                     # CLI (`scan`, `sanitize`, `restore`, `pack`, `apply`, `proxy`, `benchmark`)
 │       └── proxy/                   # Proxy/Gateway HTTP local compatível com OpenAI
-├── tests/                           # Testes unitários, adversariais e E2E
+├── tests/                           # 144 testes unitários, adversariais, E2E e auditoria de segurança (V1-V6)
 ├── pyproject.toml                   # Empacotamento Python >= 3.12 (zero deps externas)
 ├── .gitignore
 └── README.md
@@ -158,11 +180,13 @@ blind-ai/
 
 - [x] Fase 0: Pesquisa de mercado, definição do problema, hipóteses científicas e estrutura inicial.
 - [x] Fase 1: Dataset sintético de avaliação (*benchmark*) e Camada 1/2 (Filtro de arquivos + Scanner determinístico + Cofre local).
-- [x] Fase 2: CLI própria (`blind-ai scan`, `sanitize`, `restore`, `pack`, `benchmark`) e configuração `.blindai.toml`.
-- [x] Fase 3: Experimento científico — Scanner determinístico vs. contextual/híbrido e benchmark adversarial.
-- [x] Fase 4: Proxy/Gateway HTTP local (`/v1/chat/completions` com JSON/SSE, auth Bearer, TTL de sessão e limites de payload).
-- [x] Fase 5: Cofre cifrado autenticado (`--passphrase`), empacotamento de contexto multi-arquivo (`ContextPacker`) e auditoria `--staged --strict`.
-- [x] Fase 6: Validação E2E ponta a ponta (`pack` -> 0 vazamentos -> `restore` executável) e documentação v1.0.
+- [x] Fase 2: CLI própria (`blind-ai scan`, `sanitize`, `restore`, `pack`, `apply`, `benchmark`) e configuração `.blindai.toml`.
+- [x] Fase 3: Experimento científico — Scanner determinístico vs. contextual/híbrido e benchmark adversarial multi-linguagem.
+- [x] Fase 4: Proxy/Gateway HTTP local (`/v1/chat/completions` com JSON/SSE, `tool_calls`, auth Bearer, `X-Blind-AI-Session-Id`, TTL e limites de payload).
+- [x] Fase 5: Cofre cifrado autenticado (`--passphrase` / `BLIND_AI_PASSPHRASE`), `ContextPacker` multi-arquivo e auditoria `--staged --strict` via índice Git (`git show`).
+- [x] Fase 6: Validação E2E ponta a ponta (`pack` -> 0 vazamentos -> `restore`/`apply` executável) e documentação v1.0.
+- [x] Fase 7 & 8: Expansão de detectores (URL credentials, PEM, Stripe, Slack, Google, Anthropic, Bearer, JS/TS/Go/YAML), zero falsos positivos na stdlib do Python e comando `blind-ai apply`.
+- [x] Fase 9: Hardening de segurança V1–V6 (proteção anti-oráculo de restauração, tags HMAC, anti-CSRF/DNS Rebinding, bloqueio anti-RCE em `apply`, `chmod 0600` e proteção ReDoS $O(N)$ — **144/144 testes aprovados**).
 
 ## Documentação
 
