@@ -55,3 +55,18 @@
 - **Nota do PM:** Aprovado para o domínio 'proxy' (feature 'openai_proxy_streaming_hardening'). EvidenceBundle confirma passed=true com todos os gates aprovados: gate_1_hard_constraints (46 ms), gate_2_unit_tests (4451 ms) e gate_3_http_runtime (586 ms, 2/2 probes ao vivo).
 - **Evidência:** `{"passed": true, "results": [{"feature": "openai_proxy_streaming_hardening", "domain": "proxy", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 46, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 4451, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_http_runtime", "ok": true, "ms": 586, "summary": "2/2 probe(s) validados ao vivo no Proxy HTTP."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
 
+## [2026-11-22 21:38:12] T12 — `repo_context_packer` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado para o domínio 'core' (feature 'repo_context_packer'): passed == true no EvidenceBundle compacto, com gate_1_hard_constraints (9ms) e gate_2_unit_tests (444ms) aprovados.
+- **Evidência:** `{"passed": true, "results": [{"feature": "repo_context_packer", "domain": "core", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 9, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 444, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 21:44:53] T13 — `cli_v1_and_proprietary_terms` (`APPROVED`)
+- **Tentativas:** 2/3
+- **Nota do PM:** Domínio 'cli' aprovado. A feature 'cli_v1_and_proprietary_terms' retornou passed == true com todos os gates aprovados: gate_1_hard_constraints (ok: true, 22ms), gate_2_unit_tests (ok: true, 4463ms) e gate_3_cli_runtime (ok: true, 650ms). Feedback: TODOS OS GATES APROVADOS.
+- **Evidência:** `{"passed": true, "results": [{"feature": "cli_v1_and_proprietary_terms", "domain": "cli", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 22, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 4463, "summary": "Testes unitários aprovados."}, {"gate": "gate_3_cli_runtime", "ok": true, "ms": 650, "summary": "CLI real executada com sucesso."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+
+## [2026-11-22 21:47:46] T14 — `e2e_safe_context_validation` (`APPROVED`)
+- **Tentativas:** 1/3
+- **Nota do PM:** Aprovado para o domínio 'benchmark' (feature 'e2e_safe_context_validation'): EvidenceBundle reportou passed=true com gate_1_hard_constraints (ok=true, 1ms) e gate_2_unit_tests (ok=true, 2862ms) aprovados ("TODOS OS GATES APROVADOS.").
+- **Evidência:** `{"passed": true, "results": [{"feature": "e2e_safe_context_validation", "domain": "benchmark", "passed": true, "gates": [{"gate": "gate_1_hard_constraints", "ok": true, "ms": 1, "summary": "Sintaxe e hard constraints OK."}, {"gate": "gate_2_unit_tests", "ok": true, "ms": 2862, "summary": "Testes unitários aprovados."}], "feedback": "TODOS OS GATES APROVADOS."}]}`
+

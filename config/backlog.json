@@ -134,6 +134,47 @@
       "status": "approved",
       "attempts": 1,
       "last_note": "Aprovado para o domínio 'proxy' (feature 'openai_proxy_streaming_hardening'). EvidenceBundle confirma passed=true com todos os gates aprovados: gate_1_hard_constraints (46 ms), gate_2_unit_tests (4451 ms) e gate_3_http_runtime (586 ms, 2/2 probes ao vivo)."
+    },
+    {
+      "id": "T12",
+      "phase": "Fase 6",
+      "feature_key": "repo_context_packer",
+      "title": "Implementar ContextPacker para empacotar repositório inteiro com cofre compartilhado e termos proprietários",
+      "depends_on": [
+        "T02",
+        "T04",
+        "T06",
+        "T10"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'core' (feature 'repo_context_packer'): passed == true no EvidenceBundle compacto, com gate_1_hard_constraints (9ms) e gate_2_unit_tests (444ms) aprovados."
+    },
+    {
+      "id": "T13",
+      "phase": "Fase 6",
+      "feature_key": "cli_v1_and_proprietary_terms",
+      "title": "Adicionar proprietary_terms ao .blindai.toml e CLI v1.0 unificada (pack, restore cifrado, proxy, scan --staged)",
+      "depends_on": [
+        "T08",
+        "T11",
+        "T12"
+      ],
+      "status": "approved",
+      "attempts": 2,
+      "last_note": "Domínio 'cli' aprovado. A feature 'cli_v1_and_proprietary_terms' retornou passed == true com todos os gates aprovados: gate_1_hard_constraints (ok: true, 22ms), gate_2_unit_tests (ok: true, 4463ms) e gate_3_cli_runtime (ok: true, 650ms). Feedback: TODOS OS GATES APROVADOS."
+    },
+    {
+      "id": "T14",
+      "phase": "Fase 6",
+      "feature_key": "e2e_safe_context_validation",
+      "title": "Criar teste E2E ponta a ponta (pack -> 0 vazamentos -> restore executável) e atualizar README.md v1.0",
+      "depends_on": [
+        "T13"
+      ],
+      "status": "approved",
+      "attempts": 1,
+      "last_note": "Aprovado para o domínio 'benchmark' (feature 'e2e_safe_context_validation'): EvidenceBundle reportou passed=true com gate_1_hard_constraints (ok=true, 1ms) e gate_2_unit_tests (ok=true, 2862ms) aprovados (\"TODOS OS GATES APROVADOS.\")."
     }
   ]
 }

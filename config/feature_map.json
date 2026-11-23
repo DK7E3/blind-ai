@@ -223,6 +223,57 @@
           "expected_body_contains": "choices"
         }
       ]
+    },
+    "repo_context_packer": {
+      "domain": "core",
+      "description": "Fase 6A: Empacotador seguro de repositório inteiro (ContextPacker) para enviar toda a base de código como contexto para IA mantendo um único PseudonymVault compartilhado entre arquivos, respeitando .gitignore, FileFilter e termos proprietários.",
+      "files": [
+        "src/blind_ai/core/packer.py",
+        "tests/test_packer.py"
+      ],
+      "invariants": [
+        "Varre diretório respeitando .gitignore (padrões básicos), pastas técnicas (.git, .venv, __pycache__, node_modules) e FileFilter (bloqueando .env, .key, .pem, binários).",
+        "Usa um único PseudonymVault compartilhado em toda a varredura para garantir o mesmo placeholder cross-file quando o mesmo segredo/IP/termo aparece em arquivos diferentes.",
+        "Suporta lista opcional de proprietary_terms (substituídos de forma reversível por placeholders __BLIND_PROPRIETARY_TERM_NNN__).",
+        "Retorna PackResult com markdown/texto pronto para LLM (árvore de arquivos + blocos de código sanitizados), contagem de arquivos incluídos/bloqueados, estimativa de tokens (~chars/4) e zero vazamento dos segredos/termos originais no bundle."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_packer.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
+    },
+    "cli_v1_and_proprietary_terms": {
+      "domain": "cli",
+      "description": "Fase 6B: Suporte a proprietary_terms em BlindAIConfig (.blindai.toml) e CLI v1.0 unificada com `blind-ai pack`, `restore`, `proxy`, `scan --staged --strict`, `--passphrase` (cofre cifrado) e `--config`.",
+      "files": [
+        "src/blind_ai/core/config.py",
+        "src/blind_ai/cli/main.py",
+        "tests/test_cli_v1.py"
+      ],
+      "invariants": [
+        "BlindAIConfig suporta `proprietary_terms` em .blindai.toml mantendo 100% de retrocompatibilidade com tests/test_config.py.",
+        "CLI suporta `pack <dir> --output <file> --vault <file> [--passphrase ...] [--config ...] [--json]` gerando contexto seguro do repositório inteiro.",
+        "CLI suporta `restore` com `--passphrase` (cofre cifrado via secure_vault) mantendo compatibilidade com cofre JSON aberto.",
+        "CLI suporta subcomando `proxy` (delegando argumentos para BlindAIProxyServer) e `scan --staged` sem quebrar tests/test_cli.py."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_config.py", "tests/test_cli.py", "tests/test_cli_v1.py", "-v"],
+      "runtime_mode": "cli_command",
+      "cli_probe_command": ["{python}", "-m", "blind_ai", "pack", "src", "--json"],
+      "probes": []
+    },
+    "e2e_safe_context_validation": {
+      "domain": "benchmark",
+      "description": "Fase 6C: Teste de integração ponta a ponta (mini-repositório real -> blind-ai pack -> 0 vazamentos -> resposta simulada da IA -> blind-ai restore com código Python executável) + atualização do README.md com guia prático de uso.",
+      "files": [
+        "tests/test_e2e_workflow.py",
+        "README.md"
+      ],
+      "invariants": [
+        "Testa ponta a ponta via subprocesso CLI: cria mini-repositório temporário com .env, segredos, IPs privados e termos proprietários -> roda `python -m blind_ai pack` com `--passphrase` -> comprova 0 vazamentos no bundle -> simula resposta da IA com placeholders -> roda `python -m blind_ai restore` -> valida ast.parse() e execução do código restaurado.",
+        "README.md documenta instalação (`pip install -e .`), Fluxo 1 (`blind-ai pack` / `restore`), Fluxo 2 (`blind-ai proxy` para IDEs), `.blindai.toml` e status atualizado das Fases 1 a 6."
+      ],
+      "unit_test_command": ["{python}", "-m", "unittest", "tests/test_e2e_workflow.py", "-v"],
+      "runtime_mode": "unit_only",
+      "probes": []
     }
   }
 }

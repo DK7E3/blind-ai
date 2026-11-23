@@ -76,6 +76,7 @@ class BlindAIConfig:
     allowlist_patterns: tuple[str, ...] = ()
     extra_blocked_files: tuple[str, ...] = ()
     custom_rules: tuple[tuple[str, str], ...] = ()
+    proprietary_terms: tuple[str, ...] = ()
     _compiled_allowlist_patterns: tuple[re.Pattern[str], ...] = field(
         init=False, repr=False, compare=False
     )
@@ -87,6 +88,7 @@ class BlindAIConfig:
         normalized_values = _dedupe_strings(self.allowlist_values)
         normalized_patterns = _dedupe_strings(self.allowlist_patterns)
         normalized_blocked = _dedupe_strings(self.extra_blocked_files)
+        normalized_proprietary = _dedupe_strings(self.proprietary_terms)
 
         if isinstance(self.custom_rules, Mapping):
             raw_rules = _coerce_custom_rules(self.custom_rules, field_name="custom_rules")
@@ -117,6 +119,7 @@ class BlindAIConfig:
         object.__setattr__(self, "allowlist_patterns", normalized_patterns)
         object.__setattr__(self, "extra_blocked_files", normalized_blocked)
         object.__setattr__(self, "custom_rules", deduped_rules)
+        object.__setattr__(self, "proprietary_terms", normalized_proprietary)
         object.__setattr__(
             self, "_compiled_allowlist_patterns", tuple(compiled_allowlist)
         )
@@ -148,6 +151,7 @@ class BlindAIConfig:
         allowlist_patterns: list[str] = []
         extra_blocked_files: list[str] = []
         custom_rules: list[tuple[str, str]] = []
+        proprietary_terms: list[str] = []
 
         # Root-level keys
         allowlist_values.extend(
@@ -165,6 +169,11 @@ class BlindAIConfig:
         )
         custom_rules.extend(
             _coerce_custom_rules(data.get("custom_rules"), field_name="custom_rules")
+        )
+        proprietary_terms.extend(
+            _coerce_str_list(
+                data.get("proprietary_terms"), field_name="proprietary_terms"
+            )
         )
 
         # [allowlist] section
@@ -211,8 +220,14 @@ class BlindAIConfig:
                     rules_section.get("custom_rules"), field_name="rules.custom_rules"
                 )
             )
+            proprietary_terms.extend(
+                _coerce_str_list(
+                    rules_section.get("proprietary_terms"),
+                    field_name="rules.proprietary_terms",
+                )
+            )
             for key, value in rules_section.items():
-                if key in ("extra_blocked_files", "custom_rules"):
+                if key in ("extra_blocked_files", "custom_rules", "proprietary_terms"):
                     continue
                 if isinstance(value, str):
                     custom_rules.append((key, value))
@@ -238,6 +253,7 @@ class BlindAIConfig:
             allowlist_patterns=tuple(allowlist_patterns),
             extra_blocked_files=tuple(extra_blocked_files),
             custom_rules=tuple(custom_rules),
+            proprietary_terms=tuple(proprietary_terms),
         )
 
     @classmethod
