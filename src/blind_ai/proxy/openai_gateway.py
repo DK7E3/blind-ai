@@ -297,7 +297,20 @@ def _restore_for_session(
     session_store: SessionStoreProtocol,
     session_id: str,
     text: str,
+    *,
+    allowed_placeholders: set[str] | None = None,
 ) -> str:
+    if not text:
+        return text
+    if allowed_placeholders is not None:
+        def _sub(match: re.Match[str]) -> str:
+            ph = match.group(0)
+            if ph not in allowed_placeholders:
+                return ph
+            restored_token = session_store.restore(session_id, ph)
+            return ph if restored_token is None else restored_token
+
+        return _COMPLETE_PLACEHOLDER_RE.sub(_sub, text)
     restored = session_store.restore(session_id, text)
     return text if restored is None else restored
 
@@ -306,6 +319,8 @@ def _restore_json_response(
     response_body: dict[str, Any],
     session_store: SessionStoreProtocol,
     session_id: str,
+    *,
+    allowed_placeholders: set[str] | None = None,
 ) -> dict[str, Any]:
     """Restore placeholders in an OpenAI chat completion JSON object."""
     restored_body = dict(response_body)
@@ -325,6 +340,7 @@ def _restore_json_response(
                         session_store,
                         session_id,
                         msg_copy["content"],
+                        allowed_placeholders=allowed_placeholders,
                     )
                 tool_calls = msg_copy.get("tool_calls")
                 if isinstance(tool_calls, list):
@@ -342,6 +358,7 @@ def _restore_json_response(
                                     session_store,
                                     session_id,
                                     fn_copy["arguments"],
+                                    allowed_placeholders=allowed_placeholders,
                                 )
                             tc_copy["function"] = fn_copy
                         restored_tool_calls.append(tc_copy)
@@ -352,6 +369,7 @@ def _restore_json_response(
                     session_store,
                     session_id,
                     choice_copy["text"],
+                    allowed_placeholders=allowed_placeholders,
                 )
             new_choices.append(choice_copy)
         restored_body["choices"] = new_choices
@@ -477,6 +495,7 @@ def _forward_json_upstream(
     *,
     upstream_api_key: str | None = None,
     timeout: float = _DEFAULT_UPSTREAM_TIMEOUT,
+    allowed_placeholders: set[str] | None = None,
 ) -> dict[str, Any]:
     endpoint = resolve_upstream_endpoint(upstream_url)
     body_bytes = json.dumps(outbound_payload, ensure_ascii=False).encode("utf-8")
@@ -521,7 +540,12 @@ def _forward_json_upstream(
             "Upstream JSON response must be an object.",
         )
 
-    return _restore_json_response(parsed, session_store, session_id)
+    return _restore_json_response(
+        parsed,
+        session_store,
+        session_id,
+        allowed_placeholders=allowed_placeholders,
+    )
 
 
 def _iter_upstream_sse(
@@ -532,6 +556,7 @@ def _iter_upstream_sse(
     *,
     upstream_api_key: str | None = None,
     timeout: float = _DEFAULT_UPSTREAM_TIMEOUT,
+    allowed_placeholders: set[str] | None = None,
 ) -> Iterator[bytes]:
     endpoint = resolve_upstream_endpoint(upstream_url)
     body_bytes = json.dumps(outbound_payload, ensure_ascii=False).encode("utf-8")
@@ -575,7 +600,12 @@ def _iter_upstream_sse(
             restorer = restorers.get(choice_idx)
             if restorer is None:
                 restorer = StreamRestorer(
-                    lambda text: _restore_for_session(session_store, session_id, text)
+                    lambda text: _restore_for_session(
+                        session_store,
+                        session_id,
+                        text,
+                        allowed_placeholders=allowed_placeholders,
+                    )
                 )
                 restorers[choice_idx] = restorer
             return restorer
@@ -585,7 +615,12 @@ def _iter_upstream_sse(
             restorer = tool_restorers.get(key)
             if restorer is None:
                 restorer = StreamRestorer(
-                    lambda text: _restore_for_session(session_store, session_id, text)
+                    lambda text: _restore_for_session(
+                        session_store,
+                        session_id,
+                        text,
+                        allowed_placeholders=allowed_placeholders,
+                    )
                 )
                 tool_restorers[key] = restorer
             return restorer
@@ -725,6 +760,11 @@ def handle_chat_completions(
         session_store,
         session_id=session_id,
     )
+    request_placeholders = set(
+        _COMPLETE_PLACEHOLDER_RE.findall(
+            json.dumps(outbound.get("messages", []), ensure_ascii=False)
+        )
+    )
     is_stream = bool(outbound.get("stream", False))
     model = str(outbound.get("model") or _DEFAULT_LOCAL_MODEL)
 
@@ -737,6 +777,7 @@ def handle_chat_completions(
                 resolved_session_id,
                 upstream_api_key=upstream_api_key,
                 timeout=timeout,
+                allowed_placeholders=request_placeholders,
             )
         else:
             stream_iter = _iter_local_echo_sse(
@@ -755,6 +796,7 @@ def handle_chat_completions(
             resolved_session_id,
             upstream_api_key=upstream_api_key,
             timeout=timeout,
+            allowed_placeholders=request_placeholders,
         )
     else:
         json_body = _build_local_echo_json(

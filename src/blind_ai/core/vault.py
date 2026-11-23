@@ -7,10 +7,14 @@ syntax-safe session placeholders and restores them in a single pass.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
+import hashlib
+import hmac
 import json
+import os
 from pathlib import Path
 import re
+import secrets
 from typing import Any
 import uuid
 
@@ -39,9 +43,17 @@ class PseudonymVault:
         session_id: str | None = None,
         *,
         scanner: DeterministicScanner | None = None,
+        tag_placeholders: bool = False,
+        tag_secret: str | None = None,
     ) -> None:
         self._session_id: str = session_id if session_id is not None else uuid.uuid4().hex
         self._scanner: DeterministicScanner = scanner if scanner is not None else DeterministicScanner()
+        self._tag_placeholders: bool = bool(tag_placeholders or tag_secret)
+        self._tag_secret: str = (
+            tag_secret
+            if isinstance(tag_secret, str) and tag_secret
+            else secrets.token_hex(16)
+        )
         self._value_to_placeholder: dict[str, str] = {}
         self._placeholder_to_value: dict[str, str] = {}
         self._counters: dict[str, int] = {}
@@ -70,16 +82,26 @@ class PseudonymVault:
 
         normalized_kind = _normalize_kind(kind)
         seq = self._counters.get(normalized_kind, 0) + 1
-        placeholder = f"__BLIND_{normalized_kind}_{seq:03d}__"
+        placeholder = self._format_placeholder(normalized_kind, seq, value)
         while placeholder in self._placeholder_to_value:
             seq += 1
-            placeholder = f"__BLIND_{normalized_kind}_{seq:03d}__"
+            placeholder = self._format_placeholder(normalized_kind, seq, value)
 
         self._counters[normalized_kind] = seq
         self._value_to_placeholder[value] = placeholder
         self._placeholder_to_value[placeholder] = value
         self._restore_pattern = None
         return placeholder
+
+    def _format_placeholder(self, normalized_kind: str, seq: int, value: str) -> str:
+        if not self._tag_placeholders:
+            return f"__BLIND_{normalized_kind}_{seq:03d}__"
+        tag = hmac.new(
+            self._tag_secret.encode("utf-8"),
+            f"{self._session_id}:{normalized_kind}:{seq}:{value}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:6].upper()
+        return f"__BLIND_{normalized_kind}_{seq:03d}_{tag}__"
 
     def sanitize(self, text: str, findings: list[Finding] | None = None) -> str:
         """Replace detected sensitive spans in *text* with session placeholders.
@@ -118,17 +140,33 @@ class PseudonymVault:
             sanitized = f"{sanitized[:start]}{placeholder}{sanitized[end:]}"
         return sanitized
 
-    def restore(self, text: str) -> str:
-        """Restore all session placeholders in *text* back to their original values.
+    def restore(
+        self,
+        text: str,
+        *,
+        allowed_placeholders: Collection[str] | None = None,
+    ) -> str:
+        """Restore session placeholders in *text* back to their original values.
 
-        Uses a single-pass compiled regex with escaped placeholders sorted by
-        descending length to prevent collisions and cascading re-substitutions.
+        When *allowed_placeholders* is provided, only placeholders explicitly in
+        that collection are restored (preventing cross-context oracle extraction
+        of other secrets stored in the same session vault).
         """
         if not text or not self._placeholder_to_value:
             return text
 
+        allowed_set = (
+            set(allowed_placeholders) if allowed_placeholders is not None else None
+        )
         pattern = self._get_restore_pattern()
-        return pattern.sub(lambda match: self._placeholder_to_value[match.group(0)], text)
+
+        def _replace(match: re.Match[str]) -> str:
+            ph = match.group(0)
+            if allowed_set is not None and ph not in allowed_set:
+                return ph
+            return self._placeholder_to_value[ph]
+
+        return pattern.sub(_replace, text)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the vault state to a JSON-compatible dictionary."""
@@ -201,13 +239,17 @@ class PseudonymVault:
         return vault
 
     def save(self, path: str | Path) -> Path:
-        """Persist the vault state as UTF-8 JSON to *path*."""
+        """Persist the vault state as UTF-8 JSON to *path* with 0600 permissions."""
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
         return target
 
     @classmethod

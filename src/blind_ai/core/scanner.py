@@ -12,10 +12,10 @@ import ipaddress
 import math
 import re
 
-_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>()]+")
+_URL_RE = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}://[^\s\"'<>()]+")
 
 _URL_CREDENTIALS_RE = re.compile(
-    r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s\"'<>():@]+:(?P<secret>[^/\s\"'<>()@]+)@[^/\s\"'<>()]+"
+    r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,31}://[^/\s\"'<>():@]{1,256}:(?P<secret>[^/\s\"'<>()@]{1,512})@[^/\s\"'<>()]+"
 )
 
 _BEARER_TOKEN_RE = re.compile(
@@ -37,11 +37,11 @@ _SEQUENTIAL_ALPHABET_SUBSTRINGS: tuple[str, ...] = (
 
 _NON_PYTHON_SENSITIVE_ASSIGN_RE = re.compile(
     r"""(?mx)
-    (?:^|[\s{,;])
+    (?:^|[ \t{,;])
     ["']?(?P<name>[A-Za-z_][A-Za-z0-9_-]{1,63})["']?
-    \s*(?::\s*[A-Za-z0-9_<>\[\]|.?]+\s*)?
+    [ \t]*(?::[ \t]*[A-Za-z0-9_<>\[\]|.?]+[ \t]*)?
     (?:=|:=|:)
-    \s*(?:["'`](?P<qvalue>[^"'`\r\n]{16,})["'`]|(?P<uvalue>[^\s"'`#;,{}()\[\]]{16,}))
+    [ \t]*(?:["'`](?P<qvalue>[^"'`\r\n]{16,})["'`]|(?P<uvalue>[^\s"'`#;,{}()\[\]]{16,}))
     """
 )
 
@@ -99,8 +99,8 @@ _REGEX_RULES: tuple[tuple[str, re.Pattern[str], float], ...] = (
     (
         "pem_private_key",
         re.compile(
-            r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
-            r"|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
+            r"-----BEGIN (?:[A-Z0-9]+(?: [A-Z0-9]+)* )?PRIVATE KEY-----[\s\S]{1,16384}?-----END (?:[A-Z0-9]+(?: [A-Z0-9]+)* )?PRIVATE KEY-----"
+            r"|-----BEGIN (?:[A-Z0-9]+(?: [A-Z0-9]+)* )?PRIVATE KEY-----"
         ),
         0.99,
     ),
@@ -189,6 +189,18 @@ def _extract_target_names(target: ast.AST) -> list[str]:
             names.extend(_extract_target_names(elt))
         return names
     return []
+
+
+def _fold_string_binop(node: ast.AST) -> str | None:
+    """Recursively fold ``"a" + "b"`` AST nodes into a single combined string."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_string_binop(node.left)
+        right = _fold_string_binop(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
 
 
 class DeterministicScanner:
@@ -341,16 +353,42 @@ class DeterministicScanner:
                         node.value.value, str
                     ):
                         sensitive_value_ids.add(id(node.value))
+                    elif isinstance(node.value, ast.BinOp):
+                        sensitive_value_ids.add(id(node.value))
 
             elif isinstance(node, ast.AnnAssign):
-                if node.value is not None and any(
+                if any(
                     _is_sensitive_name(name)
                     for name in _extract_target_names(node.target)
                 ):
-                    if isinstance(node.value, ast.Constant) and isinstance(
-                        node.value.value, str
-                    ):
+                    if node.value is not None and isinstance(
+                        node.value, ast.Constant
+                    ) and isinstance(node.value.value, str):
                         sensitive_value_ids.add(id(node.value))
+                    elif node.value is None and isinstance(
+                        node.annotation, ast.Constant
+                    ) and isinstance(node.annotation.value, str):
+                        # Catches YAML `api_secret: "..."` parsed as Python type annotation
+                        sensitive_value_ids.add(id(node.annotation))
+
+            elif isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if (
+                        kw.arg
+                        and _is_sensitive_name(kw.arg)
+                        and isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, str)
+                    ):
+                        sensitive_value_ids.add(id(kw.value))
+                if (
+                    len(node.args) >= 2
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                    and _is_sensitive_name(node.args[0].value)
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                ):
+                    sensitive_value_ids.add(id(node.args[1]))
 
             elif isinstance(node, ast.Dict):
                 for key_node, val_node in zip(node.keys, node.values):
@@ -372,6 +410,36 @@ class DeterministicScanner:
 
         findings: list[Finding] = []
         for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                folded = _fold_string_binop(node)
+                if folded is not None:
+                    in_sensitive = id(node) in sensitive_value_ids
+                    matched_kind: str | None = None
+                    matched_conf = 0.88 if in_sensitive else 0.82
+                    for kind, pattern, conf in _REGEX_RULES:
+                        if pattern.search(folded):
+                            matched_kind = kind
+                            matched_conf = conf
+                            break
+                    if matched_kind is None and self._is_high_entropy_token(
+                        folded, sensitive_context=in_sensitive
+                    ):
+                        matched_kind = "high_entropy_token"
+                    if matched_kind is not None:
+                        start, end = self._node_span(text, lines, line_offsets, node, "")
+                        findings.append(
+                            Finding(
+                                kind=matched_kind,
+                                value=text[start:end],
+                                start=start,
+                                end=end,
+                                line=node.lineno,
+                                source="ast_entropy",
+                                confidence=matched_conf,
+                            )
+                        )
+                continue
+
             if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                 continue
             if id(node) in docstring_ids:
@@ -432,7 +500,7 @@ class DeterministicScanner:
             return False
         if _MIME_TYPE_RE.match(value):
             return False
-        if any(ch in _REGEX_LIKE_CHARS for ch in value):
+        if value.startswith("^") and value.endswith("$"):
             return False
         if any(seq in value for seq in _SEQUENTIAL_ALPHABET_SUBSTRINGS):
             return False
@@ -441,6 +509,9 @@ class DeterministicScanner:
 
         if sensitive_context:
             return True
+
+        if any(ch in _REGEX_LIKE_CHARS for ch in value):
+            return False
 
         has_lower = any(ch.islower() for ch in value)
         has_upper = any(ch.isupper() for ch in value)
@@ -472,9 +543,10 @@ class DeterministicScanner:
         abs_end = line_offsets[end_lineno - 1] + end_char_col
 
         raw_slice = text[abs_start:abs_end]
-        inner_pos = raw_slice.find(value)
-        if inner_pos != -1:
-            return abs_start + inner_pos, abs_start + inner_pos + len(value)
+        if value:
+            inner_pos = raw_slice.find(value)
+            if inner_pos != -1:
+                return abs_start + inner_pos, abs_start + inner_pos + len(value)
         return abs_start, abs_end
 
     @staticmethod

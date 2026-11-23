@@ -44,8 +44,12 @@ class SessionStore:
         scanner_factory: Callable[[], Any] = HybridScanner,
         ttl_seconds: float | None = None,
         clock: Callable[[], float] | None = None,
+        max_sessions: int = 256,
     ) -> None:
+        if isinstance(max_sessions, bool) or not isinstance(max_sessions, int) or max_sessions <= 0:
+            raise ValueError("max_sessions must be a positive integer.")
         self._scanner_factory = scanner_factory
+        self._max_sessions = max_sessions
         self._lock = threading.Lock()
         self._ttl_store: TTLSessionStore | None = (
             TTLSessionStore(ttl_seconds, clock=clock or time.monotonic)
@@ -104,18 +108,31 @@ class SessionStore:
             return self._ttl_store.get(session_id)
         return self._sessions.get(session_id)
 
+    def _evict_oldest_if_full_unlocked(self) -> None:
+        if self._ttl_store is not None:
+            self._ttl_store.purge_expired()
+            while len(self._ttl_store._sessions) >= self._max_sessions:
+                oldest_sid = next(iter(self._ttl_store._sessions))
+                self._ttl_store.delete(oldest_sid)
+            return
+        while len(self._sessions) >= self._max_sessions:
+            oldest_sid = next(iter(self._sessions))
+            del self._sessions[oldest_sid]
+
     def _get_or_create_unlocked(self, session_id: str | None) -> PseudonymVault:
         if self._ttl_store is not None:
             sid = session_id if session_id is not None else uuid.uuid4().hex
             existing = self._ttl_store.get(sid)
             if existing is not None:
                 return existing
+            self._evict_oldest_if_full_unlocked()
             return self._ttl_store.get_or_create(sid, scanner=self._scanner_factory())
 
         if session_id is not None:
             existing = self._sessions.get(session_id)
             if existing is not None:
                 return existing
+            self._evict_oldest_if_full_unlocked()
             vault = PseudonymVault(
                 session_id=session_id,
                 scanner=self._scanner_factory(),
@@ -123,6 +140,7 @@ class SessionStore:
             self._sessions[vault.session_id] = vault
             return vault
 
+        self._evict_oldest_if_full_unlocked()
         vault = PseudonymVault(scanner=self._scanner_factory())
         self._sessions[vault.session_id] = vault
         return vault
@@ -172,13 +190,45 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the local Blind AI proxy endpoints."""
 
     server: BlindAIProxyServer
+    timeout = 15.0
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         if self.server.quiet:
             return
         super().log_message(format, *args)
 
+    def _check_host_and_csrf(self) -> bool:
+        """Block DNS rebinding (invalid Host) and browser cross-origin CSRF requests."""
+        host_hdr = self.headers.get("Host")
+        if host_hdr is not None:
+            host_only = host_hdr.strip().lower()
+            if host_only.startswith("["):
+                host_only = host_only.split("]")[0] + "]"
+            else:
+                host_only = host_only.split(":")[0]
+            bound_host = str(self.server.server_address[0]).lower()
+            allowed_hosts = {"127.0.0.1", "localhost", "::1", "[::1]", bound_host}
+            if host_only and host_only not in allowed_hosts:
+                self._send_json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": f"Forbidden Host header (DNS rebinding guard): {host_hdr}"},
+                )
+                return False
+
+        origin_hdr = self.headers.get("Origin")
+        sec_fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if origin_hdr is not None or sec_fetch_site == "cross-site":
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": "Forbidden: cross-origin browser requests are blocked (CSRF guard)."},
+            )
+            return False
+
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._check_host_and_csrf():
+            return
         path = urlsplit(self.path).path
         if path == "/health":
             self._send_json(HTTPStatus.OK, {"status": "ok"})
@@ -188,6 +238,8 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown endpoint: {path}"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._check_host_and_csrf():
+            return
         path = urlsplit(self.path).path
         if path.startswith("/v1/") and not self._check_auth():
             return
@@ -396,6 +448,21 @@ class BlindAIRequestHandler(BaseHTTPRequestHandler):
         return session_id
 
     def _read_json_object(self) -> dict[str, Any] | None:
+        content_type = (self.headers.get("Content-Type") or "").strip().lower()
+        if content_type and any(
+            content_type.startswith(forbidden)
+            for forbidden in (
+                "text/plain",
+                "application/x-www-form-urlencoded",
+                "multipart/form-data",
+            )
+        ):
+            self._send_json(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                {"error": "Content-Type must be application/json."},
+            )
+            return None
+
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             self._send_json(

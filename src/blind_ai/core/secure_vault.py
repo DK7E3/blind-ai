@@ -127,6 +127,11 @@ def save_encrypted(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(_HEADER + salt + iv + ciphertext + tag)
+    try:
+        import os as _os
+        _os.chmod(target, 0o600)
+    except OSError:
+        pass
     return target
 
 

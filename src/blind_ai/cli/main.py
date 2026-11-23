@@ -49,11 +49,21 @@ _PROTECTED_APPLY_DIRS: frozenset[str] = frozenset(
         ".venv",
         "__pycache__",
         "node_modules",
+        ".vscode",
+        ".idea",
+        ".cursor",
     }
 )
 _PROTECTED_APPLY_FILES: frozenset[str] = frozenset(
     {
         ".blindai.toml",
+        "sitecustomize.py",
+        "usercustomize.py",
+        "conftest.py",
+        "setup.py",
+        ".pre-commit-config.yaml",
+        ".gitattributes",
+        ".gitconfig",
     }
 )
 
