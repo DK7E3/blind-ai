@@ -176,6 +176,34 @@ blind-ai/
 └── README.md
 ```
 
+## Resultados Experimentais e Métricas Alcançadas
+
+Todas as hipóteses científicas definidas em [01 — Pesquisa e Hipóteses](docs/01-pesquisa-e-hipoteses.md) foram validadas em tempo de execução e documentadas em [02 — Resultados Experimentais, Latência e Economia de Tokens](docs/02-resultados-e-metricas.md):
+
+### 1. Experimento Científico H1 vs. H2 (Determinístico vs. Híbrido)
+
+| Motor / Camada | Recall (Cobertura) | Precision (Precisão) | Falsos Positivos (FP) | Latência Média | Meta da Hipótese |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **H1 — `DeterministicScanner` (Estruturados)** | **100,0%** | **100,0%** | 0 | **0,17 ms/arq** | Recall $\ge 95\%$ e $< 100\text{ ms}$ (**Aprovada**) |
+| **H1 — `DeterministicScanner` (Global c/ Comentários)** | 66,7% | 100,0% | 0 | 0,32 ms/arq | Demonstra limite em vazamentos contextuais |
+| **H2 — `HybridScanner` (Camada 2 + Camada 3 Contextual)** | **100,0% (+33,3%)** | **100,0%** | 0 | **0,42 ms/arq** | Reduzir FN contextuais sem perder precisão (**Aprovada**) |
+
+### 2. Benchmark Adversarial Multi-Linguagem e Código Real (Fora do Dataset)
+
+| Suíte de Avaliação | Escopo | Recall | Precision | Taxa de Falso Positivo (FPR) | Latência / Resultado |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Benchmark Adversarial** | 20 casos em 7 linguagens (Python, JS, TS, YAML, JSON, SQL, Logs + UUIDv4 e Git SHA-1/256 benignos) | **100,0%** | **100,0%** | **0,0%** | **0,47 ms/caso** |
+| **Auditoria em Código Real (Python Stdlib)** | 81 arquivos reais da biblioteca padrão do Python (`json`, `email`, `http`, `urllib`, `logging`, `asyncio`) | — | — | **0 falsos positivos** (apenas 1 IP RFC 1918 literal real `192.168.0.1` em `urllib/request.py`) | **100% limpo** |
+| **Hipótese H3 (Preservação de Sintaxe)** | Round-trip `restore(sanitize(code))` + validação `ast.parse()` e execução real via `pack` $\rightarrow$ `apply` | **100,0%** | **100,0%** | **0,0%** | **100% íntegro e executável** |
+| **Auditoria de Segurança (V1–V6)** | Anti-oráculo de restauração, bypasses AST/YAML, CSRF/DNS Rebinding, anti-RCE em `apply`, ReDoS $O(N)$ (120 KB em $< 50\text{ ms}$) e `chmod 0600` | — | — | — | **144/144 testes aprovados** |
+
+### 3. Economia e Controle de Tokens (`ContextPacker`)
+
+Para permitir enviar o repositório inteiro como contexto para a IA sem desperdiçar janela de contexto nem estourar custos de API:
+- **Poda automática na Camada 1 ($0$ tokens desperdiçados com ruído):** bloqueia antes da leitura pastas técnicas (`.git`, `.venv`, `node_modules`, `__pycache__`), binários, arquivos sensíveis (`.env`, `*.pem`, `*.key`) e lockfiles/arquivos minificados (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `Cargo.lock`, `*.min.js`, `*.min.css`), que sozinhos costumam consumir de **40% a 70% dos tokens** de um repositório real.
+- **Orçamento incremental $O(N)$ (`--max-tokens` e `--max-file-bytes`):** calcula a estimativa de tokens em tempo constante $O(1)$ por arquivo durante a varredura, respeitando o teto exato da janela do modelo (ex.: `--max-tokens 120000`) sem reconstruir strings em memória.
+- **Placeholders curtos e determinísticos (`__BLIND_<TIPO>_<SEQ>__`):** substitui blocos extensos (como chaves privadas PEM multi-linha e tokens JWT longos) por um identificador compacto único, reduzindo o número de tokens enviados no prompt e restaurando o conteúdo original localmente a **custo zero de tokens de LLM**.
+
 ## Status Atual
 
 - [x] Fase 0: Pesquisa de mercado, definição do problema, hipóteses científicas e estrutura inicial.
@@ -191,3 +219,4 @@ blind-ai/
 ## Documentação
 
 - [01 — Pesquisa de Mercado, Hipóteses e Plano Experimental](docs/01-pesquisa-e-hipoteses.md)
+- [02 — Resultados Experimentais, Latência, Segurança e Economia de Tokens](docs/02-resultados-e-metricas.md)
